@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+shopeasy_dev.db
+tests/__pycache__/

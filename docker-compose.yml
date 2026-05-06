@@ -1,0 +1,122 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: shopeasy-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: shopeasy
+      POSTGRES_USER: LLM-project-shopeasy
+      POSTGRES_PASSWORD: LLm-260346
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U LLM-project-shopeasy -d shopeasy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    container_name: shopeasy-backend
+    restart: unless-stopped
+    environment:
+      APP_NAME: "ShopEasy Backend"
+      APP_ENV: development
+      API_V1_PREFIX: /api/v1
+      DATABASE_URL: "postgresql+psycopg://LLM-project-shopeasy:LLm-260346@db:5432/shopeasy"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minio-root-user
+      MINIO_SECRET_KEY: minio-root-password
+      MINIO_BUCKET_NAME: evidence
+      MINIO_USE_SSL: "False"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: >
+      python -m uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
+  redis:
+    image: redis:7-alpine
+    container_name: shopeasy-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: shopeasy-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minio-root-user
+      MINIO_ROOT_PASSWORD: minio-root-password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  create-buckets:
+    image: minio/mc
+    container_name: shopeasy-mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc config host add myminio http://minio:9000 minio-root-user minio-root-password;
+      /usr/bin/mc mb myminio/evidence --ignore-existing;
+      /usr/bin/mc policy set public myminio/evidence;
+      exit 0;
+      "
+
+  frontend:
+    build:
+      context: ./frontend
+      target: development
+    container_name: shopeasy-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: development
+      VITE_POLL: 1000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
