@@ -69,6 +69,11 @@ def policy_rag_node(state: TrackingWorkflowState, context: RefundContext) -> Tra
 
 
 def refund_node(db: Session, state: TrackingWorkflowState, context: RefundContext) -> tuple[TrackingWorkflowState, RefundRequest]:
+    if context.existing_refund_request is not None:
+        refund_request = context.existing_refund_request
+        state.tool_logs.append({"node": "refund_node", "tool": "load_existing_refund_request", "refund_request_id": refund_request.id})
+        return state, refund_request
+
     refund_request = RefundRequest(
         id=_new_prefixed_id("RF"),
         order_id=context.order.id,
@@ -85,7 +90,7 @@ def refund_node(db: Session, state: TrackingWorkflowState, context: RefundContex
     )
     db.add(refund_request)
     db.flush()
-    state.tool_logs.append({"node": "refund_node", "tool": "create_or_load_refund_request", "refund_request_id": refund_request.id})
+    state.tool_logs.append({"node": "refund_node", "tool": "create_refund_request", "refund_request_id": refund_request.id})
     return state, refund_request
 
 
@@ -149,6 +154,22 @@ def approval_node(db: Session, state: TrackingWorkflowState, case: Case, refund_
 
 
 def ensure_case_node(db: Session, state: TrackingWorkflowState, context: RefundContext, refund_request: RefundRequest) -> tuple[TrackingWorkflowState, Case]:
+    if context.existing_case is not None:
+        case = context.existing_case
+        if refund_request.case_id is None:
+            refund_request.case_id = case.id
+            refund_request.updated_at = datetime.utcnow()
+            db.flush()
+        state.tool_logs.append({"node": "case_node", "tool": "load_existing_case", "case_id": case.id})
+        return state, case
+
+    policy_titles = [p.title for p in context.policies[:3] if p.title]
+    ai_summary = (
+        f"Customer {context.customer.name} requested refund for order {context.order.id}. "
+        f"Amount: {context.order.total_amount} {context.order.currency}."
+        + (f" Policies: {', '.join(policy_titles)}." if policy_titles else "")
+    )
+
     case = Case(
         id=_new_prefixed_id("CS"),
         customer_id=context.customer.id,
@@ -156,7 +177,7 @@ def ensure_case_node(db: Session, state: TrackingWorkflowState, context: RefundC
         case_type="refund",
         priority="medium",
         status="open",
-        ai_summary="Refund request created from customer conversation.",
+        ai_summary=ai_summary,
         assigned_role="admin",
         created_by="ai",
         created_at=datetime.utcnow(),
@@ -167,7 +188,7 @@ def ensure_case_node(db: Session, state: TrackingWorkflowState, context: RefundC
     refund_request.case_id = case.id
     refund_request.updated_at = datetime.utcnow()
     db.flush()
-    state.tool_logs.append({"node": "case_node", "tool": "create_or_load_case", "case_id": case.id})
+    state.tool_logs.append({"node": "case_node", "tool": "create_case", "case_id": case.id})
     return state, case
 
 
@@ -177,11 +198,15 @@ def refund_support_response_node(
     case: Case,
     evidence_result: dict[str, object],
 ) -> TrackingWorkflowState:
-    state.response_text = build_refund_response(
+    response = build_refund_response(
         order_id=context.order.id,
         case_id=case.id,
         has_evidence=bool(evidence_result.get("sufficient", False)),
     )
+    policy_titles = [p.title for p in context.policies[:2] if p.title]
+    if policy_titles:
+        response += f" (อ้างอิงนโยบาย: {', '.join(policy_titles)})"
+    state.response_text = response
     state.tool_logs.append({"node": "support_response_node", "tool": "build_refund_response"})
     return state
 
@@ -193,5 +218,5 @@ def refund_memory_write_node(state: TrackingWorkflowState, case: Case) -> Tracki
 
 
 def refund_logging_node(state: TrackingWorkflowState) -> TrackingWorkflowState:
-    state.tool_logs.append({"node": "logging_node", "tool": "record_refund_trace_placeholder"})
+    state.tool_logs.append({"node": "logging_node", "tool": "finalize_refund_workflow"})
     return state

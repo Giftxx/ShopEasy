@@ -34,6 +34,7 @@ services:
       MINIO_SECRET_KEY: minio-root-password
       MINIO_BUCKET_NAME: evidence
       MINIO_USE_SSL: "False"
+      SECRET_KEY: "shopeasy-docker-dev-secret-key-2026"
     ports:
       - "8000:8000"
     depends_on:

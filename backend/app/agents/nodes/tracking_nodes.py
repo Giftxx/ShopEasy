@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from functools import partial
+
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -10,6 +13,7 @@ from app.agents.tools.tracking import (
     build_tracking_response,
     detect_tracking_intent,
 )
+from app.db.models import Conversation
 from app.repositories.tracking import get_tracking_context
 
 
@@ -39,6 +43,18 @@ def context_resolution_node(db: Session, state: GraphState) -> GraphState:
     if not customer_id or not conversation_id:
         raise ValueError("customer_id and conversation_id must be in state")
 
+    # Auto-create conversation if it doesn't exist
+    if db.get(Conversation, conversation_id) is None:
+        db.add(Conversation(
+            id=conversation_id,
+            customer_id=customer_id,
+            channel="web_chat",
+            status="open",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        ))
+        db.flush()
+
     context = get_tracking_context(db=db, customer_id=customer_id, conversation_id=conversation_id)
     if context is None:
         raise HTTPException(status_code=404, detail="Customer or conversation not found.")
@@ -55,20 +71,18 @@ def context_resolution_node(db: Session, state: GraphState) -> GraphState:
 
 def memory_retrieval_node(state: GraphState) -> GraphState:
     """Build a summary of the conversation memory."""
-    # This node now depends on the context being resolved first.
     customer = state.get("customer", {})
     orders = state.get("active_orders", [])
-    
-    # Create a mock context object for the tool
-    class MockContext:
-        def __init__(self, customer, orders):
-            self.customer = type("MockCustomer", (), customer)()
-            self.active_orders = [type("MockOrder", (), o)() for o in orders]
+    shipments = state.get("active_shipments", [])
 
-    if customer and orders:
-        mock_context = MockContext(customer, orders)
-        memory_summary = build_memory_summary(mock_context)
-        state["memory_summary"] = memory_summary
+    if customer:
+        # build_memory_summary uses _get_attr which handles dicts natively
+        context = {
+            "customer": customer,
+            "active_orders": orders,
+            "active_shipments": shipments,
+        }
+        state["memory_summary"] = build_memory_summary(context)
         _add_tool_call(state, "memory_retrieval_node", "build_memory_summary")
 
     return state
@@ -83,29 +97,14 @@ def planner_node(state: GraphState) -> GraphState:
 
 def shipping_node(state: GraphState) -> GraphState:
     """Summarize shipment information."""
-    # This node requires the full context to be loaded in state
     shipments = state.get("active_shipments", [])
-    
-    # The tool expects ORM objects, but we now have dicts.
-    # We need to re-hydrate them or adapt the tool. Let's re-hydrate for now.
-    class MockShipment:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-            # Handle nested objects
-            self.events = [type("MockEvent", (), e)() for e in kwargs.get("events", [])]
-            self.items = [type("MockItem", (), i)() for i in kwargs.get("items", [])]
 
     if shipments:
-        mock_shipments = [MockShipment(**s) for s in shipments]
-        
-        # The tool needs a mock context object
-        class MockContext:
-            def __init__(self, shipments):
-                self.active_shipments = shipments
-        
-        shipment_summaries = build_shipment_summaries(MockContext(mock_shipments))
-        state["shipments"] = [s.model_dump() for s in shipment_summaries] # The tool returns Pydantic models
-    
+        # build_shipment_summaries uses _get_attr which handles dicts natively
+        context = {"active_shipments": shipments}
+        shipment_summaries = build_shipment_summaries(context)
+        state["shipments"] = [s.model_dump() for s in shipment_summaries]
+
     _add_tool_call(state, "shipping_node", "build_shipment_summaries")
     return state
 
@@ -113,18 +112,12 @@ def shipping_node(state: GraphState) -> GraphState:
 def support_response_node(state: GraphState) -> GraphState:
     """Generate the final response for the user."""
     shipment_summaries = state.get("shipments", [])
-    
-    # The tool expects Pydantic models, which `shipping_node` now provides.
-    class ShipmentSummary:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
 
     if shipment_summaries:
-        hydrated_summaries = [ShipmentSummary(**s) for s in shipment_summaries]
-        response_text = build_tracking_response(hydrated_summaries)
+        # build_tracking_response uses _get_attr which handles dicts natively
+        response_text = build_tracking_response(shipment_summaries)
         state["customer_response"] = response_text
     else:
-        # Fallback if no shipments were found
         state["customer_response"] = "ขออภัยค่ะ ไม่พบข้อมูลการจัดส่งสำหรับออเดอร์ของคุณในขณะนี้"
 
     _add_tool_call(state, "support_response_node", "build_tracking_response")

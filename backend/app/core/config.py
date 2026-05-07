@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     minio_bucket_name: str = "evidence"
     minio_use_ssl: bool = False
 
+    # JWT settings
+    secret_key: str = "shopeasy-change-in-production-secret-key-2026"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

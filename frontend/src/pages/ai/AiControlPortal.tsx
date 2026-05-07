@@ -100,10 +100,12 @@ export function AiControlPortal() {
     >
       <div className="ai-control-page">
         <Sidebar
+          title="ShopEasy"
+          subtitle="AI Control"
+          accent="linear-gradient(135deg, #6d28d9, #4f46e5)"
           items={navItems}
           activeKey={activeTab}
-          onChange={(key) => setActiveTab(key as AiTab)}
-          variant="ai"
+          onSelect={(key) => setActiveTab(key as AiTab)}
         />
 
         <div className="portal-main portal-main--ai-control">

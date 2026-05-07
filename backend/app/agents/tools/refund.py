@@ -12,10 +12,16 @@ def detect_refund_intent(message: str) -> str:
         "สินค้าเสียหาย",
         "ของเสียหาย",
         "ของพัง",
+        "ชำรุด",
+        "ไม่ได้รับ",
+        "ส่งผิด",
+        "wrong item",
+        "damaged",
+        "missing",
     ]
     if any(keyword in lowered for keyword in refund_keywords):
         return "refund_request"
-    return "refund_request"
+    return "general_inquiry"
 
 
 def select_relevant_policy_titles(policies: list[Policy]) -> list[str]:

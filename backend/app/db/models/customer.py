@@ -20,6 +20,7 @@ class User(TimestampMixin, Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     role: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)
+    hashed_password: Mapped[str | None] = mapped_column(String(255))
 
     customer_profile: Mapped["Customer | None"] = relationship(back_populates="user", uselist=False)
 

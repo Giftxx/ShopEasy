@@ -1,22 +1,56 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { api } from '../lib/api'
 import { saveSession } from '../lib/session'
 import type { Role } from '../types/api'
 
-const ROLES: { role: Role; label: string; sublabel: string; icon: string }[] = [
-  { role: 'customer',     label: 'Customer',    sublabel: 'ลูกค้าทั่วไป',   icon: '🧑‍💼' },
-  { role: 'admin',        label: 'Admin',       sublabel: 'ทีมหลังบ้าน',    icon: '🛡️' },
-  { role: 'ai-engineer',  label: 'AI Engineer', sublabel: 'ผู้ดูแลระบบ AI', icon: '🤖' },
+const ROLES: { role: Role; label: string; sublabel: string; icon: string; email: string }[] = [
+  { role: 'customer',    label: 'Customer',    sublabel: 'ลูกค้าทั่วไป',   icon: '🧑‍💼', email: 'customer_demo@shopeasy.local' },
+  { role: 'admin',       label: 'Admin',       sublabel: 'ทีมหลังบ้าน',    icon: '🛡️',  email: 'admin_demo@shopeasy.local' },
+  { role: 'ai-engineer', label: 'AI Engineer', sublabel: 'ผู้ดูแลระบบ AI', icon: '🤖',  email: 'ai_system_admin@shopeasy.local' },
 ]
+
+const ROLE_ROUTES: Record<Role, string> = {
+  customer: '/customer',
+  admin: '/admin',
+  'ai-engineer': '/ai-control',
+}
 
 export function LoginPage() {
   const navigate = useNavigate()
   const [role, setRole] = useState<Role>('customer')
   const [rememberMe, setRememberMe] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
-  const [emailValue, setEmailValue] = useState('demo@shopeasy.local')
+  const [emailValue, setEmailValue] = useState('customer_demo@shopeasy.local')
   const [passwordValue, setPasswordValue] = useState('demo1234')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function handleRoleSelect(r: Role) {
+    setRole(r)
+    const found = ROLES.find((x) => x.role === r)
+    if (found) setEmailValue(found.email)
+    setError(null)
+  }
+
+  async function handleLogin() {
+    setLoading(true)
+    setError(null)
+    try {
+      const resp = await api.login({ email: emailValue, password: passwordValue })
+      saveSession({
+        user: resp.user,
+        access_token: resp.access_token,
+        customer_id: resp.customer_id,
+      })
+      navigate(ROLE_ROUTES[role])
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Login failed')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   return (
     <main className="login-page">
@@ -80,7 +114,7 @@ export function LoginPage() {
                 type="button"
                 id={`role-${r}`}
                 className={`role-card${role === r ? ' is-selected' : ''}`}
-                onClick={() => setRole(r)}
+                onClick={() => handleRoleSelect(r)}
               >
                 <div className="role-card__icon">{icon}</div>
                 <strong>{label}</strong>
@@ -98,13 +132,17 @@ export function LoginPage() {
         <button
           type="button"
           className="primary-button primary-button--wide"
-          onClick={() => {
-            saveSession(role)
-            navigate(role === 'customer' ? '/customer' : role === 'admin' ? '/admin' : '/ai-control')
-          }}
+          disabled={loading}
+          onClick={handleLogin}
         >
-          Sign in →
+          {loading ? 'Signing in…' : 'Sign in →'}
         </button>
+
+        {error && (
+          <p style={{ color: 'var(--color-danger, #ef4444)', marginTop: '0.5rem', fontSize: '0.875rem' }}>
+            {error}
+          </p>
+        )}
 
         <footer className="login-card__footer">
           <div className="login-card__footer-badge">

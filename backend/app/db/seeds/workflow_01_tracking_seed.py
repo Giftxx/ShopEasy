@@ -1,8 +1,11 @@
 from datetime import datetime
 
+from app.core.security import get_password_hash
+
 
 def get_workflow_01_seed_data() -> dict[str, list[dict]]:
     now = datetime.utcnow()
+    _pw = get_password_hash("demo1234")
 
     return {
         "users": [
@@ -12,6 +15,7 @@ def get_workflow_01_seed_data() -> dict[str, list[dict]]:
                 "email": "customer_demo@shopeasy.local",
                 "role": "customer",
                 "status": "active",
+                "hashed_password": _pw,
                 "created_at": now,
                 "updated_at": now,
             },
@@ -21,6 +25,17 @@ def get_workflow_01_seed_data() -> dict[str, list[dict]]:
                 "email": "admin_demo@shopeasy.local",
                 "role": "admin",
                 "status": "active",
+                "hashed_password": _pw,
+                "created_at": now,
+                "updated_at": now,
+            },
+            {
+                "id": "U-003",
+                "name": "ai_system_admin",
+                "email": "ai_system_admin@shopeasy.local",
+                "role": "ai_control",
+                "status": "active",
+                "hashed_password": _pw,
                 "created_at": now,
                 "updated_at": now,
             },

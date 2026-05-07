@@ -11,6 +11,8 @@ import type {
   ConversationSummary,
   CustomerRefundCreateRequest,
   CustomerRefundCreateResponse,
+  LoginRequest,
+  LoginResponse,
   OrderSummary,
   ProactiveAlert,
   RefundRequest,
@@ -19,17 +21,25 @@ import type {
   ToolLog,
   TraceDetail,
   TraceSummary,
+  User,
 } from '../types/api'
+import { readSession } from './session'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000/api/v1'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const session = readSession()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((init?.headers as Record<string, string>) ?? {}),
+  }
+  if (session?.token) {
+    headers['Authorization'] = `Bearer ${session.token}`
+  }
+
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
     ...init,
+    headers,
   })
 
   if (!response.ok) {
@@ -67,6 +77,9 @@ function withQuery(path: string, query: Record<string, string | number | undefin
 }
 
 export const api = {
+  login: (payload: LoginRequest) =>
+    request<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  getMe: () => request<User>('/auth/me'),
   getHealth: () => request<{ status: string }>('/health'),
   sendChat: (payload: ChatRequest) =>
     request<ChatResponse>('/chat', { method: 'POST', body: JSON.stringify(payload) }),

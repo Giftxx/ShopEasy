@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.state import TrackingWorkflowState
@@ -15,6 +17,10 @@ from app.agents.tools.proactive import (
 )
 from app.db.models import Approval, Case, ProactiveAlert
 from app.repositories.proactive import ProactiveContext, get_proactive_context
+
+
+def _new_prefixed_id(prefix: str) -> str:
+    return f"{prefix}-{uuid4().hex[:8].upper()}"
 
 
 def event_ingestion_node(state: TrackingWorkflowState, event_type: str) -> TrackingWorkflowState:
@@ -97,26 +103,45 @@ def proactive_supervisor_node(state: TrackingWorkflowState, risk_score: int) -> 
 
 
 def proactive_case_node(db: Session, state: TrackingWorkflowState, context: ProactiveContext, alert: ProactiveAlert) -> tuple[TrackingWorkflowState, Case]:
-    case = db.get(Case, "CS-7001")
-    if case is None:
-        case = Case(
-            id="CS-7001",
-            customer_id=context.shipment.order.customer_id,
-            order_id=context.shipment.order_id,
-            case_type="shipping_delay",
-            priority="high",
-            status="open",
-            ai_summary="Proactive delay alert opened for shipment with stale tracking update.",
-            assigned_role="admin",
-            created_by="ai",
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+    existing_case = db.scalar(
+        select(Case)
+        .where(
+            Case.order_id == context.shipment.order_id,
+            Case.case_type == "shipping_delay",
+            Case.status.notin_(["closed", "resolved"]),
         )
-        db.add(case)
-        db.flush()
+        .order_by(Case.created_at.desc())
+    )
+    if existing_case is not None:
+        case = existing_case
+        if alert.case_id is None:
+            alert.case_id = case.id
+            db.flush()
+        state.tool_logs.append({"node": "case_node", "tool": "load_existing_proactive_case", "case_id": case.id})
+        return state, case
+
+    ai_summary = (
+        f"Proactive delay alert for shipment {context.shipment.id} on order {context.shipment.order_id}. "
+        f"Risk score: {alert.risk_score}/100. Stale tracking update detected."
+    )
+    case = Case(
+        id=_new_prefixed_id("CS"),
+        customer_id=context.shipment.order.customer_id,
+        order_id=context.shipment.order_id,
+        case_type="shipping_delay",
+        priority="high",
+        status="open",
+        ai_summary=ai_summary,
+        assigned_role="admin",
+        created_by="ai",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(case)
+    db.flush()
     alert.case_id = case.id
     db.flush()
-    state.tool_logs.append({"node": "case_node", "tool": "create_or_load_proactive_case", "case_id": case.id})
+    state.tool_logs.append({"node": "case_node", "tool": "create_proactive_case", "case_id": case.id})
     return state, case
 
 
@@ -125,24 +150,35 @@ def proactive_approval_node(db: Session, state: TrackingWorkflowState, case: Cas
         state.tool_logs.append({"node": "approval_node", "tool": "skip_approval"})
         return state
 
-    approval = db.get(Approval, "APR-7001")
-    if approval is None:
-        approval = Approval(
-            id="APR-7001",
-            case_id=case.id,
-            approval_type="compensation",
-            requested_action="Review proactive compensation for delayed shipment",
-            amount=100.00,
-            currency="THB",
-            risk_level="high",
-            status="pending",
-            ai_reason="Shipment delay exceeded threshold and risk score requires manual review.",
-            policy_citation={"workflow": "workflow_03_proactive_delay_alert"},
-            created_at=datetime.utcnow(),
+    existing_approval = db.scalar(
+        select(Approval)
+        .where(
+            Approval.case_id == case.id,
+            Approval.approval_type == "compensation",
+            Approval.status == "pending",
         )
-        db.add(approval)
-        db.flush()
-    state.tool_logs.append({"node": "approval_node", "tool": "create_or_load_proactive_approval", "approval_id": approval.id})
+        .order_by(Approval.created_at.desc())
+    )
+    if existing_approval is not None:
+        state.tool_logs.append({"node": "approval_node", "tool": "load_existing_proactive_approval", "approval_id": existing_approval.id})
+        return state
+
+    approval = Approval(
+        id=_new_prefixed_id("APR"),
+        case_id=case.id,
+        approval_type="compensation",
+        requested_action="Review proactive compensation for delayed shipment",
+        amount=100.00,
+        currency="THB",
+        risk_level="high",
+        status="pending",
+        ai_reason="Shipment delay exceeded threshold and risk score requires manual review.",
+        policy_citation={"workflow": "workflow_03_proactive_delay_alert"},
+        created_at=datetime.utcnow(),
+    )
+    db.add(approval)
+    db.flush()
+    state.tool_logs.append({"node": "approval_node", "tool": "create_proactive_approval", "approval_id": approval.id})
     return state
 
 
@@ -153,5 +189,5 @@ def proactive_memory_write_node(state: TrackingWorkflowState, case: Case, alert:
 
 
 def proactive_logging_node(state: TrackingWorkflowState) -> TrackingWorkflowState:
-    state.tool_logs.append({"node": "logging_node", "tool": "record_proactive_trace_placeholder"})
+    state.tool_logs.append({"node": "logging_node", "tool": "finalize_proactive_workflow"})
     return state

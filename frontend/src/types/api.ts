@@ -1,5 +1,27 @@
 export type Role = 'customer' | 'admin' | 'ai-engineer'
 
+export type User = {
+  id: string
+  name: string
+  email: string
+  role: string
+  status: string
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type LoginRequest = {
+  email: string
+  password: string
+}
+
+export type LoginResponse = {
+  user: User
+  access_token: string
+  token_type: string
+  customer_id?: string | null
+}
+
 export type ChatRequest = {
   customer_id: string
   conversation_id: string

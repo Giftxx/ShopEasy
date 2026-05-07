@@ -5,6 +5,7 @@ import { Sidebar } from '../../components/Sidebar'
 import { StatCard } from '../../components/StatCard'
 import { Surface } from '../../components/Surface'
 import { api } from '../../lib/api'
+import { readSession } from '../../lib/session'
 import type { Approval, CaseDetail, CaseSummary, ProactiveAlert, RefundRequest } from '../../types/api'
 
 const navItems = [
@@ -16,27 +17,41 @@ const navItems = [
 ]
 
 export function AdminPortal() {
+  const session = readSession()
+  const userName = session?.user?.name ?? 'Admin'
+
   const [activeTab, setActiveTab] = useState('dashboard')
   const [cases, setCases] = useState<CaseSummary[]>([])
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [refunds, setRefunds] = useState<RefundRequest[]>([])
   const [alerts, setAlerts] = useState<ProactiveAlert[]>([])
   const [message, setMessage] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [selectedCase, setSelectedCase] = useState<CaseDetail | null>(null)
   const [caseDetailLoading, setCaseDetailLoading] = useState(false)
   const [openingAttachmentId, setOpeningAttachmentId] = useState<string | null>(null)
 
+  function showMessage(msg: string) {
+    setMessage(msg)
+    setTimeout(() => setMessage(null), 4000)
+  }
+
   async function load() {
-    const [casesData, approvalsData, refundsData, alertsData] = await Promise.all([
-      api.getCases(),
-      api.getApprovals(),
-      api.getRefundRequests(),
-      api.getProactiveAlerts(),
-    ])
-    setCases(casesData)
-    setApprovals(approvalsData)
-    setRefunds(refundsData)
-    setAlerts(alertsData)
+    setLoadError(null)
+    try {
+      const [casesData, approvalsData, refundsData, alertsData] = await Promise.all([
+        api.getCases(),
+        api.getApprovals(),
+        api.getRefundRequests(),
+        api.getProactiveAlerts(),
+      ])
+      setCases(casesData)
+      setApprovals(approvalsData)
+      setRefunds(refundsData)
+      setAlerts(alertsData)
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Load failed')
+    }
   }
 
   useEffect(() => {
@@ -55,29 +70,41 @@ export function AdminPortal() {
   }
 
   async function handleApprovalAction(type: 'approve' | 'reject', approvalId: string) {
-    if (type === 'approve') {
-      await api.approveApproval(approvalId, 'Approved from admin portal.')
-      setMessage(`Approved ${approvalId}`)
-    } else {
-      await api.rejectApproval(approvalId, 'Rejected from admin portal.')
-      setMessage(`Rejected ${approvalId}`)
+    try {
+      if (type === 'approve') {
+        await api.approveApproval(approvalId, 'Approved from admin portal.')
+        showMessage(`Approved ${approvalId}`)
+      } else {
+        await api.rejectApproval(approvalId, 'Rejected from admin portal.')
+        showMessage(`Rejected ${approvalId}`)
+      }
+      await load()
+    } catch (err) {
+      showMessage(err instanceof Error ? err.message : 'Action failed')
     }
-    await load()
   }
 
   async function handleCloseCase(caseId: string) {
-    await api.closeCase(caseId, 'Closed from admin portal.')
-    setMessage(`Closed ${caseId}`)
-    await load()
-    if (selectedCase?.id === caseId) {
-      await loadCaseDetail(caseId)
+    try {
+      await api.closeCase(caseId, 'Closed from admin portal.')
+      showMessage(`Closed ${caseId}`)
+      await load()
+      if (selectedCase?.id === caseId) {
+        await loadCaseDetail(caseId)
+      }
+    } catch (err) {
+      showMessage(err instanceof Error ? err.message : 'Close failed')
     }
   }
 
   async function handleResolveAlert(alertId: string) {
-    await api.resolveAlert(alertId, 'Resolved from admin portal.')
-    setMessage(`Resolved ${alertId}`)
-    await load()
+    try {
+      await api.resolveAlert(alertId, 'Resolved from admin portal.')
+      showMessage(`Resolved ${alertId}`)
+      await load()
+    } catch (err) {
+      showMessage(err instanceof Error ? err.message : 'Resolve failed')
+    }
   }
 
   async function openAttachment(attachmentId: string) {
@@ -106,8 +133,8 @@ export function AdminPortal() {
           onSelect={setActiveTab}
           footer={
             <div className="sidebar-profile">
-              <strong>Praew</strong>
-              <span>Support Admin</span>
+              <strong>{userName}</strong>
+              <span>{session?.user?.email ?? 'admin'}</span>
             </div>
           }
         />
@@ -121,6 +148,7 @@ export function AdminPortal() {
             <StatCard label="Proactive Alerts" value={String(alerts.length)} hint="delay monitoring" tone="danger" />
           </div>
 
+          {loadError ? <div className="notice notice--error">{loadError}</div> : null}
           {message ? <div className="notice notice--success">{message}</div> : null}
 
           {/* ── Dashboard ── */}

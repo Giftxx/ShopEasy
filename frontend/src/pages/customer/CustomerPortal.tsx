@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { Sidebar } from '../../components/Sidebar'
 import { api } from '../../lib/api'
+import { clearSession, readSession } from '../../lib/session'
 import type {
   ChatResponse,
   ConversationSummary,
@@ -12,6 +14,8 @@ import type {
 } from '../../types/api'
 
 type CustomerTab = 'home' | 'assistant' | 'orders' | 'shipments' | 'refund' | 'alerts' | 'help'
+
+type ChatMessage = { role: 'user' | 'ai'; text: string; time: string }
 
 type RefundUploadDraft = {
   file: File
@@ -93,11 +97,18 @@ function trackingSteps(status?: string | null): boolean[] {
 }
 
 export function CustomerPortal() {
+  const navigate = useNavigate()
+  const session = readSession()
+  const customerId = session?.customer_id ?? ''
+  const userName = session?.user?.name ?? 'ลูกค้า'
+
   const [activeTab, setActiveTab] = useState<CustomerTab>('assistant')
   const [orders, setOrders] = useState<OrderSummary[]>([])
   const [shipments, setShipments] = useState<ShipmentDetail[]>([])
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [refundRequests, setRefundRequests] = useState<RefundRequest[]>([])
+  const [conversationId, setConversationId] = useState<string>('')
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [selectedRefundDetail, setSelectedRefundDetail] = useState<RefundRequestDetail | null>(null)
   const [showAllRefunds, setShowAllRefunds] = useState(false)
   const [refundDetailLoading, setRefundDetailLoading] = useState(false)
@@ -120,16 +131,19 @@ export function CustomerPortal() {
       setError(null)
       try {
         const [ordersData, shipmentSummaries, conversationsData, refundRequestsData] = await Promise.all([
-          api.getCustomerOrders('CUST-001'),
-          api.getCustomerShipments('CUST-001'),
-          api.getCustomerConversations('CUST-001'),
-          api.getCustomerRefundRequests('CUST-001'),
+          api.getCustomerOrders(customerId),
+          api.getCustomerShipments(customerId),
+          api.getCustomerConversations(customerId),
+          api.getCustomerRefundRequests(customerId),
         ])
         const shipmentDetails = await Promise.all(shipmentSummaries.map((item) => api.getShipment(item.id)))
         setOrders(ordersData)
         setShipments(shipmentDetails)
         setConversations(conversationsData)
         setRefundRequests(refundRequestsData)
+        if (conversationsData.length > 0) {
+          setConversationId(conversationsData[0].id)
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'โหลดข้อมูลลูกค้าไม่สำเร็จ')
       } finally {
@@ -148,17 +162,24 @@ export function CustomerPortal() {
   const previewOrder = orders[0] ?? null
 
   async function submitChat() {
-    if (!chatMessage.trim()) return
+    const text = chatMessage.trim()
+    if (!text) return
+    const convId = conversationId || crypto.randomUUID()
+    if (!conversationId) setConversationId(convId)
+    const now = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+    setMessages((prev) => [...prev, { role: 'user', text, time: now }])
+    setChatMessage('')
     setChatLoading(true)
     setError(null)
     try {
       const result = await api.sendChat({
-        customer_id: 'CUST-001',
-        conversation_id: 'CONV-001',
-        message: chatMessage,
+        customer_id: customerId,
+        conversation_id: convId,
+        message: text,
       })
+      const aiNow = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+      setMessages((prev) => [...prev, { role: 'ai', text: result.response_text, time: aiNow }])
       setChatResult(result)
-      setActiveTab('assistant')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'ส่งข้อความไม่สำเร็จ')
     } finally {
@@ -170,7 +191,7 @@ export function CustomerPortal() {
     setRefundDetailLoading(true)
     setError(null)
     try {
-      const detail = await api.getCustomerRefundRequestDetail('CUST-001', refundRequestId)
+      const detail = await api.getCustomerRefundRequestDetail(customerId, refundRequestId)
       setSelectedRefundDetail(detail)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'โหลดรายละเอียดคำขอคืนเงินไม่สำเร็จ')
@@ -187,8 +208,10 @@ export function CustomerPortal() {
     setRefundUploadStatus(null)
 
     try {
-      const result = await api.createCustomerRefundRequest('CUST-001', {
-        conversation_id: 'CONV-002',
+      const convId = conversationId || crypto.randomUUID()
+      if (!conversationId) setConversationId(convId)
+      const result = await api.createCustomerRefundRequest(customerId, {
+        conversation_id: convId,
         order_id: previewOrder.id,
         reason: refundReason,
         requested_resolution: 'refund',
@@ -219,6 +242,8 @@ export function CustomerPortal() {
       setShowAllRefunds(true)
       await loadRefundDetail(result.refund_request.id)
       setRefundFiles([])
+      const refundCustomerRefundRequests = await api.getCustomerRefundRequests(customerId)
+      setRefundRequests(refundCustomerRefundRequests)
       setActiveTab('refund')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'ส่งคำขอคืนเงินไม่สำเร็จ')
@@ -288,66 +313,57 @@ export function CustomerPortal() {
         </header>
 
         <div className="assistant-panel">
-          <div className="assistant-bubble assistant-bubble--user">
-            ของฉันโดนดีเลย์อีกแล้วค่ะ อัปเดตครั้งที่ 1 พ.ค.
-            <br />
-            ถ้าไม่ได้วันนี้ จะขอคืนเงินได้ไหมคะ
-            <span>10:21</span>
-          </div>
-
-          <div className="assistant-response">
-            <div className="assistant-avatar">S</div>
-            <div className="assistant-response__body">
-              <div className="assistant-card">
-                <strong>ขอดูในความล่าช้านี้ค่ะ</strong>
-                <p>เดี๋ยวตรวจสอบออเดอร์ให้แบบละเอียดค่ะ</p>
-                <span>10:21</span>
-              </div>
-
-              <div className="tracking-detail-card">
-                <strong>ออเดอร์ {previewOrder?.id ?? 'SP-1024'}</strong>
-                <dl>
-                  <div>
-                    <dt>ร้านค้า</dt>
-                    <dd>{previewOrder?.seller_name ?? 'BeautMall'}</dd>
-                  </div>
-                  <div>
-                    <dt>ขนส่ง</dt>
-                    <dd>{topShipment?.carrier ?? 'Flash Express'}</dd>
-                  </div>
-                  <div>
-                    <dt>Tracking Number</dt>
-                    <dd>{topShipment?.tracking_no ?? 'TH0123456789'}</dd>
-                  </div>
-                  <div>
-                    <dt>สถานะ</dt>
-                    <dd>{shipmentStatusLabel(topShipment?.shipment_status)}</dd>
-                  </div>
-                  <div>
-                    <dt>คาดว่าจะได้รับ</dt>
-                    <dd>{formatDate(topShipment?.eta)}</dd>
-                  </div>
-                </dl>
-              </div>
-
-              <div className="assistant-summary-card">
-                <p>หากพัสดุไม่อัปเดตภายในวันนี้ ฉันสามารถช่วยเปิดเคสติดตามให้ หรือประสานเรื่องคืนเงินต่อได้ค่ะ</p>
-                <div className="assistant-actions">
-                  <button type="button">ขอเปิดเคสติดตาม</button>
-                  <button type="button">ขออัปเดตตอนนี้</button>
-                  <button type="button">คุยกับเจ้าหน้าที่</button>
-                </div>
+          {messages.length === 0 ? (
+            <div className="assistant-empty">
+              <div className="assistant-avatar" style={{ margin: '0 auto 0.75rem' }}>S</div>
+              <strong>ShopEasy AI Assistant</strong>
+              <p>สวัสดีค่ะ! ฉันช่วยตรวจสอบพัสดุ ขอคืนเงิน หรือตอบคำถามเกี่ยวกับออเดอร์ได้เลยค่ะ</p>
+              <div className="assistant-quick-btns">
+                <button type="button" onClick={() => { setChatMessage('ของฉันอยู่ไหนแล้ว'); }}>ของฉันอยู่ไหนแล้ว</button>
+                <button type="button" onClick={() => { setChatMessage('ขอคืนเงินได้ไหม'); }}>ขอคืนเงินได้ไหม</button>
+                <button type="button" onClick={() => { setChatMessage('ออเดอร์ของฉันสถานะอะไร'); }}>สถานะออเดอร์</button>
               </div>
             </div>
-          </div>
+          ) : (
+            messages.map((msg, index) =>
+              msg.role === 'user' ? (
+                <div key={index} className="assistant-bubble assistant-bubble--user">
+                  {msg.text}
+                  <span>{msg.time}</span>
+                </div>
+              ) : (
+                <div key={index} className="assistant-response">
+                  <div className="assistant-avatar">S</div>
+                  <div className="assistant-response__body">
+                    <div className="assistant-card">
+                      <p style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</p>
+                      <span>{msg.time}</span>
+                    </div>
+                  </div>
+                </div>
+              )
+            )
+          )}
+          {chatLoading ? (
+            <div className="assistant-response">
+              <div className="assistant-avatar">S</div>
+              <div className="assistant-response__body">
+                <div className="assistant-card"><p>กำลังคิด...</p></div>
+              </div>
+            </div>
+          ) : null}
         </div>
-
-        {chatResult ? <div className="assistant-chat-result">{chatResult.response_text}</div> : null}
 
         <div className="assistant-composer">
           <input value={chatMessage} onChange={(event) => setChatMessage(event.target.value)} placeholder="พิมพ์ข้อความ..." />
-          <button type="button" className="assistant-send-button" onClick={() => void submitChat()} disabled={chatLoading}>
-            {chatLoading ? '...' : '+'}
+          <button
+            type="button"
+            className="assistant-send-button"
+            onClick={() => void submitChat()}
+            disabled={chatLoading || !chatMessage.trim()}
+            onKeyDown={(e) => { if (e.key === 'Enter') void submitChat() }}
+          >
+            {chatLoading ? '...' : 'ส่ง'}
           </button>
         </div>
       </section>
@@ -731,8 +747,16 @@ export function CustomerPortal() {
           onSelect={(key) => setActiveTab(key as CustomerTab)}
           footer={
             <div className="sidebar-profile sidebar-profile--customer">
-              <strong>Nicha</strong>
-              <span>Silver Member</span>
+              <strong>{userName}</strong>
+              <span>{session?.user?.email ?? ''}</span>
+              <button
+                type="button"
+                className="ghost-button"
+                style={{ marginTop: '0.5rem', width: '100%', fontSize: '0.75rem' }}
+                onClick={() => { clearSession(); navigate('/') }}
+              >
+                Logout
+              </button>
             </div>
           }
         />

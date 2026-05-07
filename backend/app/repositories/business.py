@@ -139,6 +139,11 @@ def get_user_by_username(db: Session, username: str) -> User | None:
     return db.scalar(stmt)
 
 
+def get_user_by_email(db: Session, email: str) -> User | None:
+    stmt: Select[tuple[User]] = select(User).where(User.email == email)
+    return db.scalar(stmt)
+
+
 def get_attachments_by_refund_request_id(db: Session, refund_request_id: str) -> list[Attachment]:
     stmt: Select[tuple[Attachment]] = (
         select(Attachment)

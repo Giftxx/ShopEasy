@@ -20,10 +20,16 @@ def detect_tracking_intent(message: str) -> str:
         "track",
         "shipment",
         "order status",
+        "ส่งแล้ว",
+        "จัดส่ง",
+        "ออเดอร์",
+        "สถานะ",
+        "delivery",
+        "deliver",
     ]
     if any(keyword in lowered for keyword in tracking_keywords):
         return "track_shipment"
-    return "track_shipment"
+    return "general_inquiry"
 
 
 def build_memory_summary(context: Any) -> str:

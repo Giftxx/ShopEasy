@@ -4,14 +4,21 @@ import type { ToolLog, TraceDetail, TraceSummary } from '../../../types/api'
 import { SectionHeader } from '../components/SectionHeader'
 import { InfoPanel } from '../components/InfoPanel'
 
-const TRACE_STEPS = [
-  { time: '10:21:43', label: 'Intent Detection', detail: 'refund_request + delayed_shipment', meta: 'Conf: 0.92', color: '#8b5cf6' },
-  { time: '10:21:44', label: 'Tool Call: get_order(SP-1024)', detail: null, meta: 'Success 330ms', color: '#10b981' },
-  { time: '10:21:45', label: 'Tool Call: get_shipment_status(TH0123456789)', detail: null, meta: 'Success 418ms', color: '#10b981' },
-  { time: '10:21:46', label: 'RAG Search: Refund Policy Section 3.2', detail: null, meta: 'Top-3 Similarity: 0.89', color: '#3b82f6' },
-  { time: '10:21:47', label: 'Decision: requires_human_approval', detail: 'Reason: amount > threshold', meta: null, color: '#f59e0b' },
-  { time: '10:21:48', label: 'Response Generated', detail: null, meta: 'Tokens: 256', color: '#ef4444' },
-]
+function statusColor(status?: string | null): string {
+  if (status === 'success') return '#10b981'
+  if (status === 'error') return '#ef4444'
+  if (status === 'running') return '#f59e0b'
+  return '#6b7280'
+}
+
+function formatTime(iso?: string | null): string {
+  if (!iso) return '-'
+  try {
+    return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  } catch {
+    return iso
+  }
+}
 
 export function TracesTab() {
   const [traces, setTraces] = useState<TraceSummary[]>([])
@@ -96,29 +103,80 @@ export function TracesTab() {
 
           <div className="ai-trace-card">
             <div className="ai-trace-card__header">
-              <span>Trace ID: <strong>{selectedTrace?.id ?? 'TRC-2024-05-16-000124'}</strong></span>
+              <span>Trace ID: <strong>{selectedTrace?.id ?? '-'}</strong></span>
               <span className="status-pill" style={{ background: '#dcfce7', color: '#15803d' }}>
-                {selectedTrace?.status ?? 'completed'}
+                {selectedTrace?.status ?? '-'}
               </span>
             </div>
-            <div className="ai-timeline">
-              {TRACE_STEPS.map((step, i) => (
-                <div key={i} className="ai-timeline-item">
-                  <div className="ai-timeline-left">
-                    <span className="ai-timeline-dot" style={{ background: step.color }} />
-                    {i < TRACE_STEPS.length - 1 && <span className="ai-timeline-line" />}
-                  </div>
-                  <div className="ai-timeline-body">
-                    <div className="ai-timeline-row">
-                      <span className="ai-timeline-time">{step.time}</span>
-                      <strong className="ai-timeline-label">{step.label}</strong>
-                      {step.meta && <span className="ai-timeline-meta" style={{ color: step.color }}>{step.meta}</span>}
+            {!selectedTrace ? (
+              <p className="ai-section-caption">ยังไม่มี trace — ลองส่ง chat ก่อนแล้วกด Apply</p>
+            ) : (
+              <div className="ai-timeline">
+                {/* Header: intent + confidence */}
+                {selectedTrace.intent ? (
+                  <div className="ai-timeline-item">
+                    <div className="ai-timeline-left">
+                      <span className="ai-timeline-dot" style={{ background: '#8b5cf6' }} />
+                      {(selectedTrace.tool_logs?.length ?? 0) > 0 && <span className="ai-timeline-line" />}
                     </div>
-                    {step.detail && <p className="ai-timeline-detail">{step.detail}</p>}
+                    <div className="ai-timeline-body">
+                      <div className="ai-timeline-row">
+                        <span className="ai-timeline-time">{formatTime(selectedTrace.started_at)}</span>
+                        <strong className="ai-timeline-label">Intent Detection</strong>
+                        {selectedTrace.confidence != null && (
+                          <span className="ai-timeline-meta" style={{ color: '#8b5cf6' }}>Conf: {selectedTrace.confidence.toFixed(2)}</span>
+                        )}
+                      </div>
+                      <p className="ai-timeline-detail">{selectedTrace.intent}</p>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ) : null}
+                {/* Tool logs */}
+                {(selectedTrace.tool_logs ?? logs).map((log, i) => {
+                  const color = statusColor(log.status)
+                  const isLast = i === (selectedTrace.tool_logs ?? logs).length - 1
+                  return (
+                    <div key={log.id} className="ai-timeline-item">
+                      <div className="ai-timeline-left">
+                        <span className="ai-timeline-dot" style={{ background: color }} />
+                        {!isLast && <span className="ai-timeline-line" />}
+                      </div>
+                      <div className="ai-timeline-body">
+                        <div className="ai-timeline-row">
+                          <span className="ai-timeline-time">{formatTime(log.created_at)}</span>
+                          <strong className="ai-timeline-label">
+                            {log.agent_name ? `[${log.agent_name}] ` : ''}{log.tool_name ?? 'tool'}
+                          </strong>
+                          {log.latency_ms != null && (
+                            <span className="ai-timeline-meta" style={{ color }}>
+                              {log.status} {log.latency_ms}ms
+                            </span>
+                          )}
+                        </div>
+                        {log.error_message ? (
+                          <p className="ai-timeline-detail" style={{ color: '#ef4444' }}>{log.error_message}</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })}
+                {/* Final response */}
+                {selectedTrace.final_response ? (
+                  <div className="ai-timeline-item">
+                    <div className="ai-timeline-left">
+                      <span className="ai-timeline-dot" style={{ background: '#6b7280' }} />
+                    </div>
+                    <div className="ai-timeline-body">
+                      <div className="ai-timeline-row">
+                        <span className="ai-timeline-time">{formatTime(selectedTrace.ended_at)}</span>
+                        <strong className="ai-timeline-label">Response Generated</strong>
+                      </div>
+                      <p className="ai-timeline-detail" style={{ fontSize: '0.82rem' }}>{selectedTrace.final_response.slice(0, 120)}{selectedTrace.final_response.length > 120 ? '…' : ''}</p>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )}
             {logs.length > 0 ? <p className="ai-section-caption">Loaded {logs.length} tool log entries for the selected trace.</p> : null}
           </div>
 
