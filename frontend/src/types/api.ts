@@ -323,3 +323,53 @@ export type CaseDetail = CaseSummary & {
   refund_requests: AdminRefundRequestDetail[]
   attachments: RefundAttachment[]
 }
+
+export type PolicyChunk = {
+  id: string
+  chunk_index: number | null
+  chunk_text: string | null
+  heading: string | null
+  tags: string[] | null
+  page_number: number | null
+}
+
+export type Policy = {
+  id: string
+  title: string | null
+  category: string | null
+  version: string | null
+  content: string | null
+  status: string | null
+  source_filename: string | null
+  file_size_bytes: number | null
+  chunk_count: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export type PolicyDetail = Policy & {
+  chunks: PolicyChunk[]
+}
+
+export type PolicyCreate = {
+  title: string
+  category: string
+  version: string
+  content: string
+}
+
+export type PolicySearchResult = {
+  policy_id: string
+  policy_title: string
+  category: string
+  chunk_index: number | null
+  chunk_text: string
+  heading: string
+  tags: string[]
+  page_number: number | null
+}
+
+export type PolicyDownloadUrl = {
+  url: string
+  filename: string
+}

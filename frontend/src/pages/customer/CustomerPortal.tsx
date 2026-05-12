@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { Sidebar } from '../../components/Sidebar'
 import { api } from '../../lib/api'
 import { clearSession, readSession } from '../../lib/session'
 import type {
-  ChatResponse,
   ConversationSummary,
   OrderSummary,
+  ProactiveAlert,
   RefundRequest,
   RefundRequestDetail,
   ShipmentDetail,
 } from '../../types/api'
 
-type CustomerTab = 'home' | 'assistant' | 'orders' | 'shipments' | 'refund' | 'alerts' | 'help'
+type CustomerTab = 'assistant' | 'orders' | 'shipments' | 'refund' | 'alerts'
 
 type ChatMessage = { role: 'user' | 'ai'; text: string; time: string }
 
@@ -24,13 +24,11 @@ type RefundUploadDraft = {
 }
 
 const navItems: { key: CustomerTab; label: string; icon: string }[] = [
-  { key: 'home', label: 'หน้าหลัก', icon: '⌂' },
-  { key: 'assistant', label: 'แชตกับ AI', icon: '✦' },
+  { key: 'assistant', label: 'แชทกับ AI', icon: '✦' },
   { key: 'orders', label: 'คำสั่งซื้อของฉัน', icon: '▣' },
-  { key: 'shipments', label: 'การจัดส่งของฉัน', icon: '◎' },
-  { key: 'refund', label: 'คืนเงิน / คืนสินค้า', icon: '◌' },
-  { key: 'alerts', label: 'การแจ้งเตือน', icon: '◔' },
-  { key: 'help', label: 'ศูนย์ช่วยเหลือ', icon: '?' },
+  { key: 'shipments', label: 'การจัดส่งของฉัน', icon: '▱' },
+  { key: 'refund', label: 'คืนเงิน / คืนสินค้า', icon: '↺' },
+  { key: 'alerts', label: 'การแจ้งเตือน', icon: '♧' },
 ]
 
 function shipmentStatusLabel(status?: string | null): string {
@@ -67,6 +65,7 @@ function formatDate(value?: string | null): string {
   if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
+
   return new Intl.DateTimeFormat('th-TH', {
     day: 'numeric',
     month: 'short',
@@ -76,17 +75,24 @@ function formatDate(value?: string | null): string {
 
 function orderStatusLabel(status?: string | null): string {
   switch (status) {
-    case 'processing':
-      return 'กำลังจัดเตรียม'
-    case 'completed':
-      return 'สำเร็จ'
-    case 'cancelled':
-      return 'ยกเลิกแล้ว'
-    case 'pending':
-      return 'รอดำเนินการ'
-    default:
-      return status ?? 'ไม่ทราบสถานะ'
+    case 'processing': return 'กำลังจัดเตรียม'
+    case 'completed':  return 'สำเร็จ'
+    case 'cancelled':  return 'ยกเลิกแล้ว'
+    case 'pending':    return 'รอดำเนินการ'
+    case 'shipped':    return 'จัดส่งแล้ว'
+    case 'in_transit': return 'อยู่ระหว่างขนส่ง'
+    default:           return status ?? 'ไม่ทราบสถานะ'
   }
+}
+
+const ORDER_STATUS_STYLE: Record<string, { bg: string; text: string; accent: string }> = {
+  processing: { bg: '#eef4ff', text: '#3a6fd8', accent: '#89b4f7' },
+  pending:    { bg: '#eef4ff', text: '#3a6fd8', accent: '#89b4f7' },
+  shipped:    { bg: '#fff7f2', text: '#c05518', accent: '#f5a878' },
+  in_transit: { bg: '#fff7f2', text: '#c05518', accent: '#f5a878' },
+  completed:  { bg: '#f0fbf6', text: '#2a8a5a', accent: '#76c9a0' },
+  delivered:  { bg: '#f0fbf6', text: '#2a8a5a', accent: '#76c9a0' },
+  cancelled:  { bg: '#fff5f6', text: '#b84050', accent: '#f09090' },
 }
 
 function trackingSteps(status?: string | null): boolean[] {
@@ -96,51 +102,76 @@ function trackingSteps(status?: string | null): boolean[] {
   return [true, false, false, false, false]
 }
 
+const STEP_LABELS = ['รับพัสดุ', 'คัดแยก', 'ระหว่างส่ง', 'ใกล้ถึง', 'จัดส่งสำเร็จ']
+
+function shipmentStatusColor(status?: string | null): string {
+  switch (status) {
+    case 'delivered': return '#37ac56'
+    case 'out_for_delivery': return '#4f7cff'
+    case 'delayed': return '#ef4444'
+    case 'in_transit': return '#ff8f41'
+    default: return '#94a3b8'
+  }
+}
+
 export function CustomerPortal() {
   const navigate = useNavigate()
   const session = readSession()
   const customerId = session?.customer_id ?? ''
   const userName = session?.user?.name ?? 'ลูกค้า'
 
-  const [activeTab, setActiveTab] = useState<CustomerTab>('assistant')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = (searchParams.get('tab') as CustomerTab) ?? 'assistant'
+  const setActiveTab = (tab: CustomerTab) => setSearchParams({ tab }, { replace: true })
   const [orders, setOrders] = useState<OrderSummary[]>([])
   const [shipments, setShipments] = useState<ShipmentDetail[]>([])
-  const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [, setConversations] = useState<ConversationSummary[]>([])
   const [refundRequests, setRefundRequests] = useState<RefundRequest[]>([])
   const [conversationId, setConversationId] = useState<string>('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [selectedRefundDetail, setSelectedRefundDetail] = useState<RefundRequestDetail | null>(null)
   const [showAllRefunds, setShowAllRefunds] = useState(false)
   const [refundDetailLoading, setRefundDetailLoading] = useState(false)
-  const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
+  const [proactiveAlerts, setProactiveAlerts] = useState<ProactiveAlert[]>([])
+  const [expandedAlertId, setExpandedAlertId] = useState<string | null>(null)
+  const [orderFilter, setOrderFilter] = useState<string>('all')
+  const [shipmentFilter, setShipmentFilter] = useState<string>('all')
   const [chatMessage, setChatMessage] = useState('ของฉันอยู่ไหนแล้ว')
   const [refundReason, setRefundReason] = useState('สินค้าเสียหายและได้รับไม่ครบ')
+  const [selectedOrderId, setSelectedOrderId] = useState<string>('')
   const [refundFiles, setRefundFiles] = useState<RefundUploadDraft[]>([])
   const [refundSubmitting, setRefundSubmitting] = useState(false)
   const [refundSuccessMessage, setRefundSuccessMessage] = useState<string | null>(null)
   const [refundUploadStatus, setRefundUploadStatus] = useState<string | null>(null)
-  const [openingAttachmentId, setOpeningAttachmentId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [chatLoading, setChatLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const refundFileInputRef = useRef<HTMLInputElement | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     async function load() {
       setLoading(true)
       setError(null)
+
       try {
-        const [ordersData, shipmentSummaries, conversationsData, refundRequestsData] = await Promise.all([
+        const [ordersData, shipmentSummaries, conversationsData, refundRequestsData, alertsData] = await Promise.all([
           api.getCustomerOrders(customerId),
           api.getCustomerShipments(customerId),
           api.getCustomerConversations(customerId),
           api.getCustomerRefundRequests(customerId),
+          api.getCustomerProactiveAlerts(customerId),
         ])
+
         const shipmentDetails = await Promise.all(shipmentSummaries.map((item) => api.getShipment(item.id)))
+
         setOrders(ordersData)
         setShipments(shipmentDetails)
         setConversations(conversationsData)
         setRefundRequests(refundRequestsData)
+        setProactiveAlerts(alertsData)
+        if (ordersData.length > 0) setSelectedOrderId(ordersData[0].id)
+
         if (conversationsData.length > 0) {
           setConversationId(conversationsData[0].id)
         }
@@ -150,36 +181,49 @@ export function CustomerPortal() {
         setLoading(false)
       }
     }
+
     void load()
-  }, [])
+  }, [customerId])
 
-  const activeShipments = useMemo(
-    () => shipments.filter((shipment) => shipment.shipment_status !== 'delivered'),
-    [shipments],
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  const previewOrder = useMemo(
+    () => orders.find((o) => o.id === selectedOrderId) ?? orders[0] ?? null,
+    [orders, selectedOrderId],
   )
-
-  const topShipment = activeShipments[0] ?? shipments[0] ?? null
-  const previewOrder = orders[0] ?? null
 
   async function submitChat() {
     const text = chatMessage.trim()
     if (!text) return
+
     const convId = conversationId || crypto.randomUUID()
     if (!conversationId) setConversationId(convId)
-    const now = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+
+    const now = new Date().toLocaleTimeString('th-TH', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+
     setMessages((prev) => [...prev, { role: 'user', text, time: now }])
     setChatMessage('')
     setChatLoading(true)
     setError(null)
+
     try {
       const result = await api.sendChat({
         customer_id: customerId,
         conversation_id: convId,
         message: text,
       })
-      const aiNow = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+
+      const aiNow = new Date().toLocaleTimeString('th-TH', {
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+
       setMessages((prev) => [...prev, { role: 'ai', text: result.response_text, time: aiNow }])
-      setChatResult(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'ส่งข้อความไม่สำเร็จ')
     } finally {
@@ -190,6 +234,7 @@ export function CustomerPortal() {
   async function loadRefundDetail(refundRequestId: string) {
     setRefundDetailLoading(true)
     setError(null)
+
     try {
       const detail = await api.getCustomerRefundRequestDetail(customerId, refundRequestId)
       setSelectedRefundDetail(detail)
@@ -202,6 +247,7 @@ export function CustomerPortal() {
 
   async function submitRefundRequest() {
     if (!previewOrder || !refundReason.trim()) return
+
     setRefundSubmitting(true)
     setError(null)
     setRefundSuccessMessage(null)
@@ -210,6 +256,7 @@ export function CustomerPortal() {
     try {
       const convId = conversationId || crypto.randomUUID()
       if (!conversationId) setConversationId(convId)
+
       const result = await api.createCustomerRefundRequest(customerId, {
         conversation_id: convId,
         order_id: previewOrder.id,
@@ -217,31 +264,27 @@ export function CustomerPortal() {
         requested_resolution: 'refund',
         evidence_items: [],
       })
+
       for (const [index, item] of refundFiles.entries()) {
         setRefundUploadStatus(`กำลังอัปโหลดไฟล์ ${index + 1}/${refundFiles.length}: ${item.file.name}`)
-        const presign = await api.presignAttachmentUpload({
-          file_name: item.file.name,
-          content_type: item.file.type || 'application/octet-stream',
-          refund_request_id: result.refund_request.id,
-          evidence_group: item.evidenceGroup,
-        })
-        await api.uploadAttachmentFile(presign.upload_url, item.file)
-        await api.confirmAttachmentUpload({
-          object_name: presign.object_name,
-          file_name: item.file.name,
-          content_type: item.file.type || 'application/octet-stream',
-          refund_request_id: result.refund_request.id,
-          evidence_group: item.evidenceGroup,
-          description: item.description ?? item.file.name,
-          file_size_bytes: item.file.size,
-        })
+
+        await api.uploadAttachmentDirect(
+          item.file,
+          result.refund_request.id,
+          item.evidenceGroup,
+          item.description ?? item.file.name,
+        )
       }
+
       setRefundRequests((current) => [result.refund_request, ...current])
       setRefundSuccessMessage(result.assistant_message)
       setRefundUploadStatus(refundFiles.length > 0 ? 'อัปโหลดหลักฐานเรียบร้อยแล้ว' : null)
       setShowAllRefunds(true)
+
       await loadRefundDetail(result.refund_request.id)
+
       setRefundFiles([])
+
       const refundCustomerRefundRequests = await api.getCustomerRefundRequests(customerId)
       setRefundRequests(refundCustomerRefundRequests)
       setActiveTab('refund')
@@ -252,218 +295,362 @@ export function CustomerPortal() {
     }
   }
 
-  async function openAttachment(attachmentId: string) {
-    setOpeningAttachmentId(attachmentId)
-    setError(null)
-    try {
-      const presign = await api.getAttachmentDownloadUrl(attachmentId)
-      window.open(presign.upload_url, '_blank', 'noopener,noreferrer')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'เปิดไฟล์หลักฐานไม่สำเร็จ')
-    } finally {
-      setOpeningAttachmentId(null)
-    }
-  }
-
-  function renderHome() {
-    return (
-      <div className="customer-home-grid">
-        <section className="customer-home-card">
-          <h3>สรุปภาพรวม</h3>
-          <div className="customer-home-stats">
-            <div>
-              <strong>{orders.length}</strong>
-              <span>คำสั่งซื้อ</span>
-            </div>
-            <div>
-              <strong>{shipments.length}</strong>
-              <span>พัสดุ</span>
-            </div>
-            <div>
-              <strong>{conversations.length}</strong>
-              <span>บทสนทนา</span>
-            </div>
-          </div>
-        </section>
-        <section className="customer-home-card">
-          <h3>สิ่งที่ควรติดตาม</h3>
-          <p>{topShipment ? `${topShipment.tracking_no} · ${shipmentStatusLabel(topShipment.shipment_status)}` : 'ยังไม่มีข้อมูลพัสดุ'}</p>
-        </section>
-      </div>
-    )
+  function openAttachment(attachmentId: string) {
+    window.open(api.getAttachmentDirectUrl(attachmentId), '_blank', 'noopener,noreferrer')
   }
 
   function renderAssistant() {
     return (
-      <section className="customer-panel customer-panel--chat">
-        <header className="customer-panel__header">
-          <div className="customer-panel__title">
-            <span className="customer-panel__index">AI</span>
+      <section className="shopeasy-chat-page">
+        <header className="shopeasy-chat-header">
+          <div className="shopeasy-chat-header__left">
+            <div className="shopeasy-ai-label">AI</div>
+
             <div>
-              <strong>แชตกับ ShopEasy AI Assistant</strong>
+              <h2>แชทกับ ShopEasy AI Assistant</h2>
               <p>
                 <span className="online-dot" />
                 ออนไลน์
               </p>
             </div>
           </div>
-          <button type="button" className="customer-dots-button">
-            ...
-          </button>
         </header>
 
-        <div className="assistant-panel">
+        <div className="shopeasy-chat-shell">
           {messages.length === 0 ? (
-            <div className="assistant-empty">
-              <div className="assistant-avatar" style={{ margin: '0 auto 0.75rem' }}>S</div>
-              <strong>ShopEasy AI Assistant</strong>
-              <p>สวัสดีค่ะ! ฉันช่วยตรวจสอบพัสดุ ขอคืนเงิน หรือตอบคำถามเกี่ยวกับออเดอร์ได้เลยค่ะ</p>
-              <div className="assistant-quick-btns">
-                <button type="button" onClick={() => { setChatMessage('ของฉันอยู่ไหนแล้ว'); }}>ของฉันอยู่ไหนแล้ว</button>
-                <button type="button" onClick={() => { setChatMessage('ขอคืนเงินได้ไหม'); }}>ขอคืนเงินได้ไหม</button>
-                <button type="button" onClick={() => { setChatMessage('ออเดอร์ของฉันสถานะอะไร'); }}>สถานะออเดอร์</button>
+            <div className="shopeasy-empty-state">
+              <div className="shopeasy-hero-icon">✦</div>
+
+              <h1>
+                <span>ShopEasy</span> AI Assistant
+              </h1>
+
+              <p className="shopeasy-hero-subtitle">
+                สวัสดีค่ะ! ฉันช่วยตรวจสอบพัสดุ ขอคืนเงิน หรือสอบถามเกี่ยวกับออเดอร์ได้เลยค่ะ
+              </p>
+
+              <div className="shopeasy-quick-actions">
+                <button type="button" onClick={() => setChatMessage('ของฉันอยู่ไหนแล้ว')}>
+                  <span className="quick-action-icon">▱</span>
+
+                  <div>
+                    <strong>ของฉันอยู่ไหนแล้ว</strong>
+                    <p>ตรวจสอบสถานะคำสั่งซื้อ</p>
+                  </div>
+
+                  <b>›</b>
+                </button>
+
+                <button type="button" onClick={() => setChatMessage('ขอคืนเงินได้ไหม')}>
+                  <span className="quick-action-icon">▰</span>
+
+                  <div>
+                    <strong>ขอคืนเงินได้ไหม</strong>
+                    <p>เช็คเงื่อนไขการคืนเงิน</p>
+                  </div>
+
+                  <b>›</b>
+                </button>
+
+                <button type="button" onClick={() => setChatMessage('ออเดอร์ของฉันสถานะอะไร')}>
+                  <span className="quick-action-icon">☏</span>
+
+                  <div>
+                    <strong>สถานะออเดอร์</strong>
+                    <p>สรุปคำสั่งซื้อทั้งหมด</p>
+                  </div>
+
+                  <b>›</b>
+                </button>
               </div>
             </div>
           ) : (
-            messages.map((msg, index) =>
-              msg.role === 'user' ? (
-                <div key={index} className="assistant-bubble assistant-bubble--user">
-                  {msg.text}
-                  <span>{msg.time}</span>
-                </div>
-              ) : (
-                <div key={index} className="assistant-response">
-                  <div className="assistant-avatar">S</div>
-                  <div className="assistant-response__body">
-                    <div className="assistant-card">
+            <div className="shopeasy-message-area">
+              {messages.map((msg, index) =>
+                msg.role === 'user' ? (
+                  <div key={index} className="shopeasy-message shopeasy-message--user">
+                    <p>{msg.text}</p>
+                    <span>{msg.time}</span>
+                  </div>
+                ) : (
+                  <div key={index} className="shopeasy-message-row">
+                    <div className="shopeasy-message-avatar">S</div>
+
+                    <div className="shopeasy-message shopeasy-message--ai">
                       <p style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</p>
                       <span>{msg.time}</span>
                     </div>
                   </div>
-                </div>
-              )
-            )
-          )}
-          {chatLoading ? (
-            <div className="assistant-response">
-              <div className="assistant-avatar">S</div>
-              <div className="assistant-response__body">
-                <div className="assistant-card"><p>กำลังคิด...</p></div>
-              </div>
-            </div>
-          ) : null}
-        </div>
+                ),
+              )}
 
-        <div className="assistant-composer">
-          <input value={chatMessage} onChange={(event) => setChatMessage(event.target.value)} placeholder="พิมพ์ข้อความ..." />
-          <button
-            type="button"
-            className="assistant-send-button"
-            onClick={() => void submitChat()}
-            disabled={chatLoading || !chatMessage.trim()}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submitChat() }}
-          >
-            {chatLoading ? '...' : 'ส่ง'}
-          </button>
+              {chatLoading ? (
+                <div className="shopeasy-message-row">
+                  <div className="shopeasy-message-avatar">S</div>
+
+                  <div className="shopeasy-message shopeasy-message--ai">
+                    <p>กำลังคิด...</p>
+                  </div>
+                </div>
+              ) : null}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+
+          <div className="shopeasy-composer">
+            <span className="composer-attach">⌕</span>
+
+            <input
+              value={chatMessage}
+              onChange={(event) => setChatMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void submitChat()
+              }}
+              placeholder="พิมพ์ข้อความของคุณที่นี่..."
+            />
+
+            <button
+              type="button"
+              onClick={() => void submitChat()}
+              disabled={chatLoading || !chatMessage.trim()}
+            >
+              ➤
+            </button>
+          </div>
+
+          <div className="shopeasy-security-note">
+            🔒 ข้อมูลของคุณปลอดภัย เรารักษาความเป็นส่วนตัวตามนโยบายบริษัท
+          </div>
         </div>
       </section>
     )
   }
 
+
+
   function renderOrders() {
+    const filterMap: Record<string, string[]> = {
+      all:        [],
+      processing: ['processing', 'pending'],
+      in_transit: ['in_transit', 'shipped'],
+      completed:  ['completed'],
+      cancelled:  ['cancelled'],
+    }
+    const filtered = orderFilter === 'all'
+      ? orders
+      : orders.filter((o) => filterMap[orderFilter]?.includes(o.order_status ?? ''))
+
+    const PILLS = [
+      { key: 'all',        label: 'ทั้งหมด',        count: orders.length },
+      { key: 'processing', label: 'จัดเตรียม',      count: orders.filter(o => ['processing','pending'].includes(o.order_status ?? '')).length },
+      { key: 'in_transit', label: 'จัดส่งแล้ว',     count: orders.filter(o => ['in_transit','shipped'].includes(o.order_status ?? '')).length },
+      { key: 'completed',  label: 'สำเร็จ',          count: orders.filter(o => o.order_status === 'completed').length },
+      { key: 'cancelled',  label: 'ยกเลิก',          count: orders.filter(o => o.order_status === 'cancelled').length },
+    ] as const
+
     return (
       <section className="customer-panel">
-        <header className="customer-panel__header customer-panel__header--section">
-          <div className="customer-panel__title">
-            <span className="customer-panel__number">2</span>
-            <strong>คำสั่งซื้อของฉัน</strong>
-          </div>
-        </header>
-
-        <div className="customer-tabs">
-          <button type="button" className="is-active">
-            ทั้งหมด
-          </button>
-          <button type="button">จัดส่งปกติ</button>
-          <button type="button">กำลังจัดส่ง</button>
-          <button type="button">สำเร็จ</button>
-          <button type="button">ยกเลิก</button>
+        <div className="ord-header">
+          <h2 className="ord-title">คำสั่งซื้อของฉัน</h2>
+          <span className="ord-count">{orders.length} รายการ</span>
         </div>
 
-        <div className="order-rows">
-          {orders.map((order) => (
-            <article key={order.id} className="order-row">
-              <div className="order-row__image">{order.seller_name?.slice(0, 1) ?? 'S'}</div>
-              <div className="order-row__main">
-                <strong>{order.id}</strong>
-                <p>{order.seller_name}</p>
-              </div>
-              <div className="order-row__price">฿{order.total_amount?.toLocaleString()}</div>
-              <div className={`order-row__status ${statusTone(order.order_status === 'completed' ? 'delivered' : 'in_transit')}`}>
-                {orderStatusLabel(order.order_status)}
-              </div>
-              <div className="order-row__date">คาดว่าจะได้รับ {formatDate(order.promised_delivery_date)}</div>
-            </article>
+        <div className="ord-filters">
+          {PILLS.map(({ key, label, count }) => (
+            <button
+              key={key}
+              type="button"
+              className={`ord-pill${orderFilter === key ? ' is-active' : ''}`}
+              onClick={() => setOrderFilter(key)}
+            >
+              {label}
+              {count > 0 && <span className="ord-pill__count">{count}</span>}
+            </button>
           ))}
+        </div>
+
+        <div className="ord-list">
+          {filtered.map((order) => {
+            const st = ORDER_STATUS_STYLE[order.order_status ?? ''] ?? { bg: '#f5f7fc', text: '#7b8aa7', accent: '#c8d0e0' }
+            return (
+              <article key={order.id} className="ord-card">
+                <div className="ord-card__accent" style={{ background: st.accent }} />
+                <div className="ord-card__body">
+                  <div className="ord-card__top">
+                    <div className="ord-card__left">
+                      <span className="ord-card__id">{order.id}</span>
+                      <span className="ord-card__seller">{order.seller_name ?? '—'}</span>
+                    </div>
+                    <div className="ord-card__right">
+                      <span className="ord-card__price">฿{order.total_amount?.toLocaleString() ?? '—'}</span>
+                      <span className="ord-card__badge" style={{ background: st.bg, color: st.text }}>
+                        {orderStatusLabel(order.order_status)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="ord-card__foot">
+                    <span className="ord-card__date">สั่งเมื่อ {formatDate(order.created_at)}</span>
+                    {order.promised_delivery_date && (
+                      <span className="ord-card__eta">คาดว่าได้รับ {formatDate(order.promised_delivery_date)}</span>
+                    )}
+                  </div>
+                </div>
+              </article>
+            )
+          })}
+          {filtered.length === 0 && (
+            <div className="ord-empty">
+              <p>ไม่มีคำสั่งซื้อในหมวดนี้</p>
+            </div>
+          )}
         </div>
       </section>
     )
   }
 
   function renderShipments() {
+    const SHIP_PILLS = [
+      { key: 'all',              label: 'ทั้งหมด',        statuses: [] as string[] },
+      { key: 'in_transit',       label: 'ระหว่างขนส่ง',   statuses: ['in_transit', 'out_for_delivery'] },
+      { key: 'delivered',        label: 'สำเร็จ',          statuses: ['delivered'] },
+      { key: 'delayed',          label: 'ล่าช้า',          statuses: ['delayed'] },
+    ] as const
+
+    const filteredShipments = shipmentFilter === 'all'
+      ? shipments
+      : shipments.filter((s) => {
+          const pill = SHIP_PILLS.find((p) => p.key === shipmentFilter)
+          return pill ? (pill.statuses as readonly string[]).includes(s.shipment_status ?? '') : true
+        })
+
     return (
       <section className="customer-panel">
         <header className="customer-panel__header customer-panel__header--section">
           <div className="customer-panel__title">
-            <span className="customer-panel__number">3</span>
             <strong>การจัดส่งของฉัน</strong>
           </div>
         </header>
 
-        <div className="tracking-search">
-          <input placeholder="ค้นหา Tracking No." />
-          <button type="button">ค้นหา</button>
+        <div className="ord-filters">
+          {SHIP_PILLS.map(({ key, label, statuses }) => {
+            const count = key === 'all'
+              ? shipments.length
+              : shipments.filter((s) => (statuses as readonly string[]).includes(s.shipment_status ?? '')).length
+            return (
+              <button
+                key={key}
+                type="button"
+                className={`ord-pill${shipmentFilter === key ? ' is-active' : ''}`}
+                onClick={() => setShipmentFilter(key)}
+              >
+                {label}
+                {count > 0 && <span className="ord-pill__count">{count}</span>}
+              </button>
+            )
+          })}
         </div>
 
-        <div className="tracking-list">
-          {shipments.map((shipment) => {
+        <div className="shipment-cards">
+          {filteredShipments.map((shipment) => {
             const steps = trackingSteps(shipment.shipment_status)
-            return (
-              <article key={shipment.id} className="tracking-list__item">
-                <div className="tracking-list__top">
-                  <div>
-                    <strong>{shipment.tracking_no}</strong>
-                    <p>{shipment.carrier}</p>
-                  </div>
-                  <div className="tracking-list__eta">
-                    <strong>
-                      {shipment.shipment_status === 'out_for_delivery'
-                        ? 'กำลังจัดส่ง'
-                        : shipment.shipment_status === 'in_transit'
-                          ? 'ในอีก 2 วัน'
-                          : 'สำเร็จแล้ว'}
-                    </strong>
-                    <span>คาดว่าจะถึง {formatDate(shipment.eta)}</span>
-                  </div>
-                </div>
+            const activeIdx = steps.every(Boolean) ? -1 : steps.lastIndexOf(true)
+            const color = shipmentStatusColor(shipment.shipment_status)
+            const EVENT_PRIORITY: Record<string, number> = {
+              picked_up: 1, sorted: 2, in_transit: 3,
+              out_for_delivery: 4, delivered: 5, carrier_contacted: 6,
+              shipment_no_update_48h: 0,
+            }
+            const recentEvents = [...shipment.events]
+              .sort((a, b) => {
+                const ta = new Date(a.event_time ?? a.created_at ?? 0).getTime()
+                const tb = new Date(b.event_time ?? b.created_at ?? 0).getTime()
+                if (tb !== ta) return tb - ta
+                const pa = EVENT_PRIORITY[a.event_type ?? ''] ?? 99
+                const pb = EVENT_PRIORITY[b.event_type ?? ''] ?? 99
+                return pb - pa
+              })
+              .slice(0, 5)
 
-                <div className="tracking-steps">
-                  {steps.map((done, index) => (
-                    <div key={`${shipment.id}-${index}`} className="tracking-step">
-                      <span className={done ? 'is-done' : ''} />
+            return (
+              <article key={shipment.id} className="shipment-card">
+                <div className="shipment-card__strip" style={{ background: color }} />
+                <div className="shipment-card__body">
+
+                  <div className="shipment-card__top">
+                    <div className="shipment-card__icon" style={{ color }}>▱</div>
+                    <div className="shipment-card__info">
+                      <strong className="shipment-card__tracking">{shipment.tracking_no}</strong>
+                      <span className="shipment-card__carrier">{shipment.carrier}</span>
                     </div>
-                  ))}
-                </div>
-                <div className="tracking-labels">
-                  <span>รับพัสดุแล้ว</span>
-                  <span>คัดแยกแล้ว</span>
-                  <span>ระหว่างส่ง</span>
-                  <span>ใกล้ถึงปลายทาง</span>
-                  <span>จัดส่งสำเร็จ</span>
+                    <div className="shipment-card__badges">
+                      <span className={`status-pill ${statusTone(shipment.shipment_status)}`}>
+                        {shipmentStatusLabel(shipment.shipment_status)}
+                      </span>
+                      {shipment.delay_risk_score >= 50 && (
+                        <span className="risk-badge">⚠ ความเสี่ยง {shipment.delay_risk_score}%</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="shipment-card__meta">
+                    <div className="shipment-card__meta-item">
+                      <span>คาดว่าถึง</span>
+                      <strong>{formatDate(shipment.eta)}</strong>
+                    </div>
+                    {shipment.last_update && (
+                      <div className="shipment-card__meta-item">
+                        <span>อัปเดตล่าสุด</span>
+                        <strong>{formatDate(shipment.last_update)}</strong>
+                      </div>
+                    )}
+                    <div className="shipment-card__meta-item">
+                      <span>ออเดอร์</span>
+                      <strong>{shipment.order_id}</strong>
+                    </div>
+                  </div>
+
+                  <div className="shipment-stepper">
+                    {steps.map((done, index) => (
+                      <div
+                        key={`${shipment.id}-step-${index}`}
+                        className={[
+                          'shipment-stepper__step',
+                          done ? 'is-done' : '',
+                          index === activeIdx ? 'is-active' : '',
+                        ].filter(Boolean).join(' ')}
+                      >
+                        {index < steps.length - 1 && (
+                          <div className={`shipment-stepper__line ${done ? 'is-done' : ''}`} />
+                        )}
+                        <div className="shipment-stepper__dot">
+                          {done && <span>✓</span>}
+                        </div>
+                        <span className="shipment-stepper__label">{STEP_LABELS[index]}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {recentEvents.length > 0 && (
+                    <div className="shipment-events">
+                      {recentEvents.map((evt) => (
+                        <div key={evt.id} className="shipment-event">
+                          <span className="shipment-event__time">{formatDate(evt.event_time ?? evt.created_at)}</span>
+                          <span className="shipment-event__msg">{evt.event_message ?? evt.event_type}</span>
+                          {evt.location && <span className="shipment-event__loc">📍 {evt.location}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                 </div>
               </article>
             )
           })}
+          {filteredShipments.length === 0 && (
+            <div className="ord-empty">
+              <p>{shipments.length === 0 ? 'ไม่มีข้อมูลการจัดส่ง' : 'ไม่มีพัสดุในหมวดนี้'}</p>
+            </div>
+          )}
         </div>
       </section>
     )
@@ -474,35 +661,59 @@ export function CustomerPortal() {
       <section className="customer-panel customer-panel--refund">
         <header className="customer-panel__header customer-panel__header--section">
           <div className="customer-panel__title">
-            <span className="customer-panel__number">4</span>
             <strong>คืนเงิน / คืนสินค้า</strong>
           </div>
         </header>
 
         <div className="refund-form-card">
           <h4>สร้างคำขอคืนเงิน / คืนสินค้า</h4>
+
+          {orders.length > 1 ? (
+            <div className="refund-reason-box" style={{ marginBottom: '0.75rem' }}>
+              <strong>เลือกออเดอร์</strong>
+              <select
+                className="refund-reason-input"
+                style={{ padding: '0.5rem', height: 'auto' }}
+                value={selectedOrderId}
+                onChange={(e) => setSelectedOrderId(e.target.value)}
+              >
+                {orders.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.id} — {o.seller_name} — ฿{o.total_amount?.toLocaleString()}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
           <div className="refund-product">
             <div className="refund-product__image">{previewOrder?.seller_name?.slice(0, 1) ?? 'S'}</div>
             <div>
-              <strong>{previewOrder?.id ?? 'SP-1024'}</strong>
-              <p>{previewOrder?.seller_name ?? 'BeautMall'}</p>
-              <span>฿{previewOrder?.total_amount?.toLocaleString() ?? '879.00'}</span>
+              <strong>{previewOrder?.id ?? '-'}</strong>
+              <p>{previewOrder?.seller_name ?? '-'}</p>
+              <span>฿{previewOrder?.total_amount?.toLocaleString() ?? '0'}</span>
             </div>
           </div>
 
           <div className="refund-reason-box">
             <strong>เหตุผล</strong>
-            <textarea className="refund-reason-input" value={refundReason} onChange={(event) => setRefundReason(event.target.value)} />
+            <textarea
+              className="refund-reason-input"
+              value={refundReason}
+              onChange={(event) => setRefundReason(event.target.value)}
+            />
           </div>
 
           <div className="refund-evidence-box">
             <strong>แนบหลักฐาน</strong>
+
             <div className="refund-evidence-grid">
               {refundFiles.map((item, index) => (
                 <div key={`${item.file.name}-${index}`} className="refund-evidence-thumb" title={item.description ?? item.file.name}>
                   {index + 1}
                 </div>
               ))}
+
               <input
                 ref={refundFileInputRef}
                 type="file"
@@ -515,12 +726,15 @@ export function CustomerPortal() {
                     evidenceGroup: index === 0 ? 'damaged_item' : 'customer_upload',
                     description: file.name,
                   }))
+
                   if (nextFiles.length > 0) {
                     setRefundFiles((current) => [...current, ...nextFiles])
                   }
+
                   event.currentTarget.value = ''
                 }}
               />
+
               <button
                 type="button"
                 className="refund-evidence-thumb refund-evidence-thumb--add"
@@ -529,7 +743,9 @@ export function CustomerPortal() {
                 +
               </button>
             </div>
+
             <p className="refund-evidence-note">จะส่งหลักฐาน {refundFiles.length} รายการไปพร้อมคำขอนี้</p>
+
             {refundFiles.length > 0 ? (
               <div className="refund-file-list">
                 {refundFiles.map((item, index) => (
@@ -538,12 +754,11 @@ export function CustomerPortal() {
                       <strong>{item.file.name}</strong>
                       <p>{item.file.type || 'application/octet-stream'} · {(item.file.size / 1024).toFixed(1)} KB</p>
                     </div>
+
                     <button
                       type="button"
                       className="refund-file-remove"
-                      onClick={() =>
-                        setRefundFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))
-                      }
+                      onClick={() => setRefundFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))}
                       disabled={refundSubmitting}
                     >
                       ลบ
@@ -552,13 +767,20 @@ export function CustomerPortal() {
                 ))}
               </div>
             ) : null}
+
             {refundUploadStatus ? <p className="refund-upload-status">{refundUploadStatus}</p> : null}
           </div>
 
           <div className="refund-actions">
-            <button type="button" className="refund-submit-button" onClick={() => void submitRefundRequest()} disabled={refundSubmitting}>
+            <button
+              type="button"
+              className="refund-submit-button"
+              onClick={() => void submitRefundRequest()}
+              disabled={refundSubmitting}
+            >
               {refundSubmitting ? 'กำลังส่ง...' : 'ส่งคำขอ'}
             </button>
+
             <button type="button" className="refund-link-button" onClick={() => setShowAllRefunds((current) => !current)}>
               {showAllRefunds ? 'แสดงย่อ' : 'ดูประวัติทั้งหมด'}
             </button>
@@ -568,147 +790,156 @@ export function CustomerPortal() {
         {refundSuccessMessage ? <div className="notice notice--success">{refundSuccessMessage}</div> : null}
         {error ? <div className="notice notice--error">{error}</div> : null}
 
-        <div className="refund-history">
-          <div className="refund-history__header">
-            <strong>{showAllRefunds ? 'ประวัติคำขอทั้งหมด' : 'คำขอล่าสุด'}</strong>
-          </div>
-
-          <div className={`refund-history__content ${showAllRefunds ? 'is-expanded' : ''}`}>
-            <div className="refund-history__list">
-              {(showAllRefunds ? refundRequests : refundRequests.slice(0, 3)).map((request) => (
+        {showAllRefunds ? (
+          <div style={{ marginTop: '1rem' }}>
+            <strong style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>ประวัติคำขอคืนเงิน ({refundRequests.length} รายการ)</strong>
+            {refundDetailLoading ? <div className="notice">กำลังโหลด...</div> : null}
+            <div className="list-stack">
+              {refundRequests.map((item) => (
                 <article
-                  key={request.id}
-                  className={`refund-history__item ${selectedRefundDetail?.id === request.id ? 'is-selected' : ''}`}
-                  onClick={() => void loadRefundDetail(request.id)}
+                  key={item.id}
+                  className="list-card"
+                  style={{ cursor: 'pointer', outline: selectedRefundDetail?.id === item.id ? '2px solid #ee4d2d' : 'none' }}
+                  onClick={() => void loadRefundDetail(item.id)}
                 >
                   <div>
-                    <strong>{request.id}</strong>
-                    <p>{request.reason}</p>
+                    <strong>{item.id}</strong>
+                    <p style={{ fontSize: '0.8rem', color: '#666' }}>{item.reason}</p>
                   </div>
-                  <div className="refund-history__meta">
-                    <span className="status-pill">{request.status ?? 'pending'}</span>
-                    <small>Evidence {request.evidence_count ?? 0}</small>
-                    <small>Case {request.case_id ?? '-'}</small>
+                  <div className="list-card__meta">
+                    <span>Risk {item.risk_score}</span>
+                    <span className="status-pill">{item.status}</span>
                   </div>
                 </article>
               ))}
             </div>
 
-            {showAllRefunds ? (
-              <div className="refund-detail-panel">
-                {refundDetailLoading ? <p>กำลังโหลดรายละเอียด...</p> : null}
-                {!refundDetailLoading && selectedRefundDetail ? (
-                  <>
-                    <strong>{selectedRefundDetail.id}</strong>
-                    <p>{selectedRefundDetail.reason}</p>
-                    <div className="refund-detail-panel__meta">
-                      <span className="status-pill">{selectedRefundDetail.status ?? 'pending'}</span>
-                      <small>Case {selectedRefundDetail.case_id ?? '-'}</small>
-                      <small>Risk {selectedRefundDetail.risk_score}</small>
-                    </div>
-                    <div className="refund-detail-panel__attachments">
-                      {selectedRefundDetail.attachments.map((attachment) => (
-                        <article key={attachment.id} className="refund-detail-attachment">
-                          <div className="refund-detail-attachment__content">
-                            <strong>{attachment.file_name ?? attachment.id}</strong>
-                            <p>{attachment.description ?? attachment.evidence_group ?? 'evidence'}</p>
+            {selectedRefundDetail ? (
+              <div className="list-card" style={{ marginTop: '0.75rem', background: '#fffaf7' }}>
+                <strong style={{ display: 'block', marginBottom: '0.5rem' }}>{selectedRefundDetail.id} — รายละเอียด</strong>
+                <p style={{ fontSize: '0.82rem' }}>เหตุผล: {selectedRefundDetail.reason}</p>
+                <p style={{ fontSize: '0.82rem' }}>สถานะ: {selectedRefundDetail.status} | AI แนะนำ: {selectedRefundDetail.ai_recommendation}</p>
+                {selectedRefundDetail.attachments.length > 0 ? (
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <strong style={{ fontSize: '0.82rem' }}>หลักฐาน ({selectedRefundDetail.attachments.length} ไฟล์):</strong>
+                    <div className="refund-attachment-list">
+                      {selectedRefundDetail.attachments.map((att) => (
+                        <div key={att.id} className="refund-attachment-item">
+                          <div>
+                            <strong>{att.file_name ?? att.id}</strong>
+                            <p className="refund-attachment-item__group">{att.evidence_group}</p>
                           </div>
                           <button
                             type="button"
-                            className="refund-detail-attachment__action"
-                            onClick={() => void openAttachment(attachment.id)}
-                            disabled={openingAttachmentId === attachment.id}
+                            className="ghost-button"
+                            onClick={(e) => { e.stopPropagation(); openAttachment(att.id) }}
                           >
-                            {openingAttachmentId === attachment.id ? 'กำลังเปิด...' : 'เปิดหลักฐาน'}
+                            เปิด
                           </button>
-                        </article>
+                        </div>
                       ))}
                     </div>
-                  </>
-                ) : null}
-                {!refundDetailLoading && !selectedRefundDetail ? <p>เลือกคำขอทางซ้ายเพื่อดูรายละเอียด</p> : null}
+                  </div>
+                ) : (
+              <p className="customer-empty">ยังไม่มีหลักฐาน</p>
+                )}
               </div>
+            ) : refundRequests.length > 0 ? (
+              <p className="customer-empty">คลิกที่รายการเพื่อดูรายละเอียด</p>
             ) : null}
           </div>
-        </div>
+        ) : null}
       </section>
     )
   }
 
   function renderAlerts() {
+    const ALERT_STYLE: Record<string, { bg: string; text: string; accent: string }> = {
+      open:     { bg: '#fff7f2', text: '#d97706', accent: '#f5a878' },
+      resolved: { bg: '#f0fbf6', text: '#059669', accent: '#76c9a0' },
+      closed:   { bg: '#f0fbf6', text: '#059669', accent: '#76c9a0' },
+    }
+
     return (
       <section className="customer-panel">
-        <header className="customer-panel__header customer-panel__header--section">
-          <div className="customer-panel__title">
-            <span className="customer-panel__number">5</span>
-            <strong>การแจ้งเตือน</strong>
-          </div>
-          <button type="button" className="section-link-button">
-            ดูทั้งหมด
-          </button>
-        </header>
+        <div className="alrt-header">
+          <h2 className="alrt-title">การแจ้งเตือน</h2>
+          <span className="alrt-count">{proactiveAlerts.filter(a => a.status === 'open').length} รายการที่ยังใช้งาน</span>
+        </div>
 
-        <div className="alert-list">
-          {activeShipments.map((shipment, index) => (
-            <article key={shipment.id} className="alert-item">
-              <div className={`alert-item__icon alert-item__icon--${index % 3}`}>{index + 1}</div>
-              <div className="alert-item__body">
-                <strong>{shipment.shipment_status === 'in_transit' ? 'อัปเดตการขนส่งช้า' : 'อัปเดตการจัดส่ง'}</strong>
-                <p>
-                  ออเดอร์ {shipment.order_id} {shipmentStatusLabel(shipment.shipment_status)}
-                </p>
-              </div>
-              <span>{index === 0 ? '10:20' : '09:12'}</span>
-            </article>
-          ))}
-          <article className="alert-item">
-            <div className="alert-item__icon alert-item__icon--2">i</div>
-            <div className="alert-item__body">
-              <strong>สำรองคืนเงินไม่ได้รับการอัปเดต</strong>
-              <p>เรากำลังตรวจสอบภายใน 1-3 วัน</p>
+        <div className="alrt-list">
+          {proactiveAlerts.length === 0 && (
+            <div className="alrt-empty">
+              <p>ไม่มีการแจ้งเตือนในขณะนี้</p>
             </div>
-            <span>28/04</span>
-          </article>
+          )}
+          {proactiveAlerts.map((alert) => {
+            const st = ALERT_STYLE[alert.status ?? ''] ?? { bg: '#f5f7fc', text: '#8090b0', accent: '#c8d0e0' }
+            const isExpanded = expandedAlertId === alert.id
+            return (
+              <article key={alert.id} className="alrt-card">
+                <div className="alrt-card__accent" style={{ background: st.accent }} />
+                <button
+                  type="button"
+                  className="alrt-card__head"
+                  onClick={() => setExpandedAlertId(isExpanded ? null : alert.id)}
+                >
+                  <div className="alrt-card__info">
+                    <span className="alrt-card__type">{alert.alert_type ?? 'การแจ้งเตือน'}</span>
+                    <span className="alrt-card__title">{alert.message_draft ?? `พัสดุ ${alert.shipment_id || alert.order_id || 'N/A'}`}</span>
+                  </div>
+                  <div className="alrt-card__right">
+                    {alert.risk_score != null && (
+                      <span className="alrt-card__risk">
+                        <span className="alrt-risk-label">ความเสี่ยง</span>
+                        <span className="alrt-risk-val" style={{ color: st.text }}>{alert.risk_score}%</span>
+                      </span>
+                    )}
+                    <span className="alrt-card__badge" style={{ background: st.bg, color: st.text }}>
+                      {alert.status === 'open' ? 'เปิดอยู่' : alert.status === 'resolved' ? 'แก้ไขแล้ว' : 'ปิด'}
+                    </span>
+                    <span className={`alrt-chevron${isExpanded ? ' is-expanded' : ''}`}>▼</span>
+                  </div>
+                </button>
+
+                {isExpanded && (
+                  <div className="alrt-card__detail">
+                    {alert.recommended_action && (
+                      <div className="alrt-section">
+                        <span className="alrt-section__label">ขอแนะนำ</span>
+                        <p className="alrt-section__text">{alert.recommended_action}</p>
+                      </div>
+                    )}
+                    {alert.resolution_note && (
+                      <div className="alrt-section">
+                        <span className="alrt-section__label">หมายเหตุ</span>
+                        <p className="alrt-section__text">{alert.resolution_note}</p>
+                      </div>
+                    )}
+                    {alert.shipment_id && (
+                      <div className="alrt-section alrt-section--inline">
+                        <span className="alrt-section__label">พัสดุ</span>
+                        <span className="alrt-section__value">{alert.shipment_id}</span>
+                      </div>
+                    )}
+                    {alert.order_id && (
+                      <div className="alrt-section alrt-section--inline">
+                        <span className="alrt-section__label">ออเดอร์</span>
+                        <span className="alrt-section__value">{alert.order_id}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </article>
+            )
+          })}
         </div>
-      </section>
-    )
-  }
-
-  function renderHelp() {
-    return (
-      <section className="customer-panel customer-panel--help">
-        <header className="customer-panel__header customer-panel__header--section">
-          <div className="customer-panel__title">
-            <span className="customer-panel__number">6</span>
-            <strong>ศูนย์ช่วยเหลือ</strong>
-          </div>
-        </header>
-
-        <div className="help-search-box">
-          <input placeholder="ค้นหาคำถามที่พบบ่อย" />
-        </div>
-
-        <div className="help-list">
-          <p>คำถามที่พบบ่อย</p>
-          <button type="button">วิธีติดตามพัสดุ</button>
-          <button type="button">นโยบายการคืนเงิน / คืนสินค้า</button>
-          <button type="button">ระยะเวลาสำหรับการคืนเงิน</button>
-          <button type="button">การขอคืนสินค้าอยู่ที่ไหน</button>
-          <button type="button">ปัญหาเรื่องค่าขนส่งชำระเงิน</button>
-          <button type="button">การขนส่งล่าช้าทำอย่างไร</button>
-        </div>
-
-        <button type="button" className="help-contact-button">
-          ติดต่อเจ้าหน้าที่
-        </button>
       </section>
     )
   }
 
   function renderContent() {
     switch (activeTab) {
-      case 'home':
-        return renderHome()
       case 'assistant':
         return renderAssistant()
       case 'orders':
@@ -719,8 +950,6 @@ export function CustomerPortal() {
         return renderRefund()
       case 'alerts':
         return renderAlerts()
-      case 'help':
-        return renderHelp()
       default:
         return renderAssistant()
     }
@@ -733,15 +962,14 @@ export function CustomerPortal() {
           <div className="customer-brand-block__logo">S</div>
           <div>
             <h1>ShopEasy</h1>
-            <strong>Agentic Support Platform</strong>
-            <p>Shopee-inspired Marketplace AI Ops</p>
+            <strong>AI Assistant</strong>
           </div>
         </div>
 
         <Sidebar
           title=""
           subtitle=""
-          accent="linear-gradient(135deg, #ff5a2b, #ff8a39)"
+          accent="linear-gradient(135deg, #ee4d2d, #ff3415)"
           items={navItems}
           activeKey={activeTab}
           onSelect={(key) => setActiveTab(key as CustomerTab)}
@@ -749,11 +977,15 @@ export function CustomerPortal() {
             <div className="sidebar-profile sidebar-profile--customer">
               <strong>{userName}</strong>
               <span>{session?.user?.email ?? ''}</span>
+
               <button
                 type="button"
                 className="ghost-button"
                 style={{ marginTop: '0.5rem', width: '100%', fontSize: '0.75rem' }}
-                onClick={() => { clearSession(); navigate('/') }}
+                onClick={() => {
+                  clearSession()
+                  navigate('/')
+                }}
               >
                 Logout
               </button>

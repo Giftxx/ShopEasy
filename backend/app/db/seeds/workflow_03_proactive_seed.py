@@ -65,29 +65,6 @@ def get_workflow_03_seed_data() -> dict[str, list[dict]]:
                 "created_at": now,
             }
         ],
-        "policies": [
-            {
-                "id": "POL-004",
-                "title": "Shipping Policy",
-                "category": "shipping",
-                "version": "v1.0",
-                "content": "Delayed shipments with no update beyond 48 hours should trigger proactive review.",
-                "status": "active",
-                "effective_from": None,
-                "effective_to": None,
-                "created_at": now,
-                "updated_at": now,
-            }
-        ],
-        "policy_chunks": [
-            {
-                "id": "PCH-004",
-                "policy_id": "POL-004",
-                "chunk_index": 0,
-                "chunk_text": "48-hour stale shipments should trigger proactive alerting.",
-                "metadata_json": {"section": "4.1"},
-                "embedding_id": "emb-pol-004-0",
-                "created_at": now,
-            }
-        ],
+        "policies": [],
+        "policy_chunks": [],
     }

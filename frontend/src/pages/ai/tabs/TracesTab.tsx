@@ -1,206 +1,324 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../../lib/api'
-import type { ToolLog, TraceDetail, TraceSummary } from '../../../types/api'
-import { SectionHeader } from '../components/SectionHeader'
-import { InfoPanel } from '../components/InfoPanel'
+import type { TraceDetail, TraceSummary } from '../../../types/api'
 
-function statusColor(status?: string | null): string {
-  if (status === 'success') return '#10b981'
-  if (status === 'error') return '#ef4444'
-  if (status === 'running') return '#f59e0b'
-  return '#6b7280'
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const WF_LABEL: Record<string, string> = {
+  workflow_01_track_shipment: 'WF01 · Tracking',
+  workflow_02_refund:         'WF02 · Refund',
+  workflow_03_proactive:      'WF03 · Proactive',
+  admin_approval_action:      'Admin Action',
+}
+const WF_COLOR: Record<string, string> = {
+  workflow_01_track_shipment: '#89b4f7',
+  workflow_02_refund:         '#f5a878',
+  workflow_03_proactive:      '#f08898',
+  admin_approval_action:      '#b8a0e8',
+}
+const STATUS_DOT: Record<string, string> = {
+  success:   '#76c9a0',
+  failed:    '#f09090',
+  completed: '#89b4f7',
+  fallback:  '#f0c870',
+  error:     '#f09090',
+  running:   '#f0c870',
+}
+const TOOL_COLOR: Record<string, string> = {
+  detect_intent:        '#b8a0e8',
+  get_shipments:        '#76c9a0',
+  validate_refund:      '#f0c870',
+  search_policy:        '#b8a0e8',
+  assess_risk:          '#f09090',
+  generate_response:    '#f5a878',
+  send_alert:           '#f0d878',
+  ingest_event:         '#a8b8cc',
+  process_cancellation: '#89b4f7',
+  approve_approval:     '#b8a0e8',
 }
 
-function formatTime(iso?: string | null): string {
-  if (!iso) return '-'
+function dotColor(s?: string | null) { return STATUS_DOT[s ?? ''] ?? '#94a3b8' }
+
+function relTime(iso?: string | null): string {
+  if (!iso) return '—'
   try {
-    return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  } catch {
-    return iso
-  }
+    const d = new Date(iso)
+    const diff = (Date.now() - d.getTime()) / 1000
+    if (diff < 60) return `${Math.round(diff)}s ago`
+    if (diff < 3600) return `${Math.round(diff / 60)}m ago`
+    if (diff < 86400) return `${Math.round(diff / 3600)}h ago`
+    return `${Math.round(diff / 86400)}d ago`
+  } catch { return '—' }
 }
+
+function shortId(id: string) {
+  return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id
+}
+
+// ── Filter pills config ───────────────────────────────────────────────────────
+
+const WF_FILTERS = [
+  { label: 'All', value: '' },
+  { label: 'WF01', value: 'workflow_01_track_shipment' },
+  { label: 'WF02', value: 'workflow_02_refund' },
+  { label: 'WF03', value: 'workflow_03_proactive' },
+]
+const STATUS_FILTERS = [
+  { label: 'All', value: '' },
+  { label: 'Success', value: 'success' },
+  { label: 'Completed', value: 'completed' },
+  { label: 'Failed', value: 'failed' },
+  { label: 'Fallback', value: 'fallback' },
+]
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export function TracesTab() {
-  const [traces, setTraces] = useState<TraceSummary[]>([])
-  const [selectedTrace, setSelectedTrace] = useState<TraceDetail | null>(null)
-  const [logs, setLogs] = useState<ToolLog[]>([])
-  const [loading, setLoading] = useState(false)
-  const [workflowFilter, setWorkflowFilter] = useState('')
-  const [statusFilter, setStatusFilter] = useState('')
-  const [intentFilter, setIntentFilter] = useState('')
-  const [caseFilter, setCaseFilter] = useState('')
+  const [traces, setTraces]           = useState<TraceSummary[]>([])
+  const [selected, setSelected]       = useState<TraceDetail | null>(null)
+  const [loadingList, setLoadingList] = useState(true)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [wfFilter, setWfFilter]       = useState('')
+  const [stFilter, setStFilter]       = useState('')
 
-  async function loadTraces(filters?: { workflow_name?: string; status?: string; intent?: string; case_id?: string }) {
-    const data = await api.getAgentTraces(filters)
-    setTraces(data)
-    if (data[0]) {
-      const [detail, logData] = await Promise.all([api.getAgentTrace(data[0].id), api.getToolLogs({ trace_id: data[0].id })])
-      setSelectedTrace(detail)
-      setLogs(logData)
-    } else {
-      setSelectedTrace(null)
-      setLogs([])
+  // Load trace list
+  async function loadList(wf?: string, st?: string) {
+    setLoadingList(true)
+    try {
+      const data = await api.getAgentTraces({
+        workflow_name: wf || undefined,
+        status: st || undefined,
+      })
+      setTraces(data)
+      if (data[0]) openTrace(data[0].id)
+      else setSelected(null)
+    } finally {
+      setLoadingList(false)
     }
   }
 
-  useEffect(() => {
-    setLoading(true)
-    void loadTraces().finally(() => setLoading(false))
-  }, [])
-
   async function openTrace(id: string) {
-    const [detail, logData] = await Promise.all([api.getAgentTrace(id), api.getToolLogs({ trace_id: id })])
-    setSelectedTrace(detail)
-    setLogs(logData)
+    setLoadingDetail(true)
+    try {
+      const detail = await api.getAgentTrace(id)
+      setSelected(detail)
+    } finally {
+      setLoadingDetail(false)
+    }
   }
 
-  return (
-    <div className="ai-section ai-tab-shell">
-      <SectionHeader
-        num="2"
-        title="Agent Traces"
-        subtitle="ตรวจสอบการทำงานของ Agent"
-        caption="ดูรายละเอียดทุกขั้นตอนการตัดสินใจ, Tool Calls, ข้อมูลที่นำมาใช้ และผลลัพธ์"
-      />
-      {loading && <div className="notice">Loading traces...</div>}
-      <div className="ai-traces-layout">
-        <div>
-          <div className="ai-filter-bar ai-filter-bar--panel">
-            <input value={workflowFilter} onChange={(e) => setWorkflowFilter(e.target.value)} placeholder="Workflow" />
-            <input value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} placeholder="Status" />
-            <input value={intentFilter} onChange={(e) => setIntentFilter(e.target.value)} placeholder="Intent" />
-            <input value={caseFilter} onChange={(e) => setCaseFilter(e.target.value)} placeholder="Case ID" />
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                setLoading(true)
-                void loadTraces({
-                  workflow_name: workflowFilter || undefined,
-                  status: statusFilter || undefined,
-                  intent: intentFilter || undefined,
-                  case_id: caseFilter || undefined,
-                }).finally(() => setLoading(false))
-              }}
-            >
-              Apply
-            </button>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                setWorkflowFilter('')
-                setStatusFilter('')
-                setIntentFilter('')
-                setCaseFilter('')
-                setLoading(true)
-                void loadTraces().finally(() => setLoading(false))
-              }}
-            >
-              Reset
-            </button>
-          </div>
+  useEffect(() => { void loadList() }, [])
 
-          <div className="ai-trace-card">
-            <div className="ai-trace-card__header">
-              <span>Trace ID: <strong>{selectedTrace?.id ?? '-'}</strong></span>
-              <span className="status-pill" style={{ background: '#dcfce7', color: '#15803d' }}>
-                {selectedTrace?.status ?? '-'}
-              </span>
+  function applyWf(v: string) {
+    setWfFilter(v)
+    void loadList(v, stFilter)
+  }
+  function applySt(v: string) {
+    setStFilter(v)
+    void loadList(wfFilter, v)
+  }
+
+  // Timeline steps for selected trace
+  const toolLogs = selected?.tool_logs ?? []
+  const totalSteps = 1 + toolLogs.length + (selected?.final_response ? 1 : 0)
+
+  return (
+    <div className="trc-shell">
+
+      {/* ── Left: list ── */}
+      <div className="trc-list-col">
+
+        {/* Filter pills */}
+        <div className="trc-filters">
+          <div className="trc-filter-group">
+            {WF_FILTERS.map(f => (
+              <button key={f.value} type="button"
+                className={`trc-pill${wfFilter === f.value ? ' is-active' : ''}`}
+                onClick={() => applyWf(f.value)}
+              >{f.label}</button>
+            ))}
+          </div>
+          <div className="trc-filter-group">
+            {STATUS_FILTERS.map(f => (
+              <button key={f.value} type="button"
+                className={`trc-pill${stFilter === f.value ? ' is-active' : ''}`}
+                onClick={() => applySt(f.value)}
+              >{f.label}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Trace rows */}
+        <div className="trc-rows">
+          {loadingList && <p className="trc-empty">Loading…</p>}
+          {!loadingList && traces.length === 0 && <p className="trc-empty">ไม่พบ trace ตรงตามเงื่อนไข</p>}
+          {traces.map(t => {
+            const wfColor = WF_COLOR[t.workflow_name] ?? '#94a3b8'
+            const isActive = selected?.id === t.id
+            return (
+              <button key={t.id} type="button"
+                className={`trc-row${isActive ? ' is-active' : ''}`}
+                style={{ borderLeftColor: wfColor }}
+                onClick={() => void openTrace(t.id)}
+              >
+                <div className="trc-row__top">
+                  <span className="trc-row__wf" style={{ color: wfColor }}>
+                    {WF_LABEL[t.workflow_name] ?? t.workflow_name}
+                  </span>
+                  <span className="trc-row__dot" style={{ background: dotColor(t.status) }} />
+                </div>
+                <div className="trc-row__intent">{t.intent ?? '—'}</div>
+                <div className="trc-row__foot">
+                  <span className="trc-row__id">{shortId(t.id)}</span>
+                  <span className="trc-row__time">{relTime(t.started_at)}</span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ── Right: detail ── */}
+      <div className="trc-detail">
+        {loadingDetail && <p className="trc-empty">Loading detail…</p>}
+
+        {!loadingDetail && !selected && (
+          <div className="trc-placeholder">
+            <span className="trc-placeholder__icon">· · ·</span>
+            <p>เลือก trace จากรายการซ้ายมือ</p>
+          </div>
+        )}
+
+        {!loadingDetail && selected && (
+          <>
+            {/* Detail header */}
+            <div className="trc-detail__head">
+              <div className="trc-detail__head-left">
+                <span className="trc-detail__wf"
+                  style={{ borderLeftColor: WF_COLOR[selected.workflow_name] ?? '#94a3b8' }}>
+                  {WF_LABEL[selected.workflow_name] ?? selected.workflow_name}
+                </span>
+                <span className="trc-detail__intent">{selected.intent}</span>
+              </div>
+              <div className="trc-detail__head-right">
+                {selected.confidence != null && (
+                  <span className="trc-detail__conf">{Math.round(selected.confidence * 100)}% conf</span>
+                )}
+                <span className="trc-detail__status" style={{ color: dotColor(selected.status) }}>
+                  ● {selected.status}
+                </span>
+                {selected.requires_human_approval && (
+                  <span className="trc-detail__human">Human Review</span>
+                )}
+              </div>
             </div>
-            {!selectedTrace ? (
-              <p className="ai-section-caption">ยังไม่มี trace — ลองส่ง chat ก่อนแล้วกด Apply</p>
-            ) : (
-              <div className="ai-timeline">
-                {/* Header: intent + confidence */}
-                {selectedTrace.intent ? (
-                  <div className="ai-timeline-item">
-                    <div className="ai-timeline-left">
-                      <span className="ai-timeline-dot" style={{ background: '#8b5cf6' }} />
-                      {(selectedTrace.tool_logs?.length ?? 0) > 0 && <span className="ai-timeline-line" />}
+
+            {/* Stats row */}
+            <div className="trc-stats">
+              <div className="trc-stat">
+                <span className="trc-stat__label">Steps</span>
+                <span className="trc-stat__val">{totalSteps}</span>
+              </div>
+              <div className="trc-stat">
+                <span className="trc-stat__label">Tools called</span>
+                <span className="trc-stat__val">{toolLogs.length}</span>
+              </div>
+              <div className="trc-stat">
+                <span className="trc-stat__label">Total latency</span>
+                <span className="trc-stat__val">
+                  {toolLogs.reduce((s, l) => s + (l.latency_ms ?? 0), 0) > 1000
+                    ? `${(toolLogs.reduce((s, l) => s + (l.latency_ms ?? 0), 0) / 1000).toFixed(1)}s`
+                    : `${toolLogs.reduce((s, l) => s + (l.latency_ms ?? 0), 0)}ms`}
+                </span>
+              </div>
+              <div className="trc-stat">
+                <span className="trc-stat__label">Started</span>
+                <span className="trc-stat__val">{relTime(selected.started_at)}</span>
+              </div>
+            </div>
+
+            {/* Timeline */}
+            <div className="trc-timeline">
+
+              {/* Step 1: Intent */}
+              <div className="trc-step">
+                <div className="trc-step__left">
+                  <span className="trc-step__dot" style={{ background: '#b8a0e8', boxShadow: '0 0 0 3px #ede9fe' }} />
+                  {(toolLogs.length > 0 || selected.final_response) && <span className="trc-step__line" />}
+                </div>
+                <div className="trc-step__body">
+                  <div className="trc-step__row">
+                    <span className="trc-step__name">Intent Detected</span>
+                    <span className="trc-step__badge" style={{ background: '#f0ebff', color: '#8b6fcc' }}>
+                      {selected.intent}
+                    </span>
+                  </div>
+                  {selected.confidence != null && (
+                    <div className="trc-step__detail">Confidence: {Math.round(selected.confidence * 100)}%</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Steps: Tool logs */}
+              {toolLogs.map((log, i) => {
+                const tc = TOOL_COLOR[log.tool_name ?? ''] ?? '#94a3b8'
+                const ok = log.status !== 'failed' && log.status !== 'error'
+                const isLast = i === toolLogs.length - 1 && !selected.final_response
+                return (
+                  <div key={log.id} className="trc-step">
+                    <div className="trc-step__left">
+                      <span className="trc-step__dot"
+                        style={{ background: ok ? tc : '#f09090', boxShadow: `0 0 0 3px ${ok ? tc : '#f09090'}44` }} />
+                      {!isLast && <span className="trc-step__line" />}
                     </div>
-                    <div className="ai-timeline-body">
-                      <div className="ai-timeline-row">
-                        <span className="ai-timeline-time">{formatTime(selectedTrace.started_at)}</span>
-                        <strong className="ai-timeline-label">Intent Detection</strong>
-                        {selectedTrace.confidence != null && (
-                          <span className="ai-timeline-meta" style={{ color: '#8b5cf6' }}>Conf: {selectedTrace.confidence.toFixed(2)}</span>
+                    <div className="trc-step__body">
+                      <div className="trc-step__row">
+                        <span className="trc-step__name" style={{ color: tc }}>
+                          {log.tool_name}
+                        </span>
+                        <span className="trc-step__agent">{log.agent_name}</span>
+                        {log.latency_ms != null && (
+                          <span className="trc-step__lat" style={{ color: ok ? '#9ca3af' : '#ef4444' }}>
+                            {log.latency_ms < 1000 ? `${log.latency_ms}ms` : `${(log.latency_ms / 1000).toFixed(1)}s`}
+                          </span>
                         )}
                       </div>
-                      <p className="ai-timeline-detail">{selectedTrace.intent}</p>
+                      {log.error_message && (
+                        <div className="trc-step__error">{log.error_message}</div>
+                      )}
                     </div>
                   </div>
-                ) : null}
-                {/* Tool logs */}
-                {(selectedTrace.tool_logs ?? logs).map((log, i) => {
-                  const color = statusColor(log.status)
-                  const isLast = i === (selectedTrace.tool_logs ?? logs).length - 1
-                  return (
-                    <div key={log.id} className="ai-timeline-item">
-                      <div className="ai-timeline-left">
-                        <span className="ai-timeline-dot" style={{ background: color }} />
-                        {!isLast && <span className="ai-timeline-line" />}
-                      </div>
-                      <div className="ai-timeline-body">
-                        <div className="ai-timeline-row">
-                          <span className="ai-timeline-time">{formatTime(log.created_at)}</span>
-                          <strong className="ai-timeline-label">
-                            {log.agent_name ? `[${log.agent_name}] ` : ''}{log.tool_name ?? 'tool'}
-                          </strong>
-                          {log.latency_ms != null && (
-                            <span className="ai-timeline-meta" style={{ color }}>
-                              {log.status} {log.latency_ms}ms
-                            </span>
-                          )}
-                        </div>
-                        {log.error_message ? (
-                          <p className="ai-timeline-detail" style={{ color: '#ef4444' }}>{log.error_message}</p>
-                        ) : null}
-                      </div>
-                    </div>
-                  )
-                })}
-                {/* Final response */}
-                {selectedTrace.final_response ? (
-                  <div className="ai-timeline-item">
-                    <div className="ai-timeline-left">
-                      <span className="ai-timeline-dot" style={{ background: '#6b7280' }} />
-                    </div>
-                    <div className="ai-timeline-body">
-                      <div className="ai-timeline-row">
-                        <span className="ai-timeline-time">{formatTime(selectedTrace.ended_at)}</span>
-                        <strong className="ai-timeline-label">Response Generated</strong>
-                      </div>
-                      <p className="ai-timeline-detail" style={{ fontSize: '0.82rem' }}>{selectedTrace.final_response.slice(0, 120)}{selectedTrace.final_response.length > 120 ? '…' : ''}</p>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            )}
-            {logs.length > 0 ? <p className="ai-section-caption">Loaded {logs.length} tool log entries for the selected trace.</p> : null}
-          </div>
+                )
+              })}
 
-          {traces.length > 0 && (
-            <div className="ai-trace-list">
-              {traces.map((trace) => (
-                <button key={trace.id} type="button" className="trace-row" onClick={() => void openTrace(trace.id)}>
-                  <div>
-                    <strong>{trace.workflow_name}</strong>
-                    <p>{trace.id}</p>
+              {/* Final step: response */}
+              {selected.final_response && (
+                <div className="trc-step">
+                  <div className="trc-step__left">
+                    <span className="trc-step__dot" style={{ background: '#76c9a0', boxShadow: '0 0 0 3px #dcf5ec' }} />
                   </div>
-                  <div className="list-card__meta">
-                    <span>{trace.intent}</span>
-                    <span className="status-pill">{trace.status}</span>
+                  <div className="trc-step__body">
+                    <div className="trc-step__row">
+                      <span className="trc-step__name">Response</span>
+                      <span className="trc-step__lat">{relTime(selected.ended_at)}</span>
+                    </div>
+                    <div className="trc-step__response">
+                      {selected.final_response.length > 200
+                        ? `${selected.final_response.slice(0, 200)}…`
+                        : selected.final_response}
+                    </div>
                   </div>
-                </button>
-              ))}
+                </div>
+              )}
+
             </div>
-          )}
-        </div>
-        <InfoPanel
-          main={['ดู Trace ทั้งหมด', 'ดู Tool Calls', 'ดูข้อมูลที่ Retrieve', 'ตรวจสอบ Decision', 'ตรวจสอบ Response']}
-          features={['Step-by-step Timeline', 'Tool Call Details', 'Retrieved Chunks', 'Model I/O', 'Export Trace']}
-        />
+
+            {/* Trace ID footer */}
+            <div className="trc-detail__footer">
+              trace id: <span className="trc-detail__id">{selected.id}</span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

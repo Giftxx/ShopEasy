@@ -7,7 +7,9 @@ from app.api.routes.chat import router as chat_router
 from app.api.routes.customer import router as customer_router
 from app.api.routes.health import router as health_router
 from app.api.routes.observability import router as observability_router
+from app.api.routes.policies import router as policies_router
 from app.api.routes.proactive import router as proactive_router
+from app.api.routes.webhooks import router as webhooks_router
 
 
 api_router = APIRouter()
@@ -18,4 +20,6 @@ api_router.include_router(customer_router, prefix="/data", tags=["data"])
 api_router.include_router(attachments_router, prefix="/attachments", tags=["attachments"])
 api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
 api_router.include_router(observability_router, prefix="/ai", tags=["ai-control"])
+api_router.include_router(policies_router, prefix="/ai", tags=["policies"])
 api_router.include_router(proactive_router, prefix="/events", tags=["events"])
+api_router.include_router(webhooks_router, prefix="/webhooks", tags=["webhooks"])

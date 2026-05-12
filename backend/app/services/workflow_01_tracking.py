@@ -6,7 +6,7 @@ from app.schemas.chat import ChatRequest, ChatResponse, ShipmentSummary
 from app.services.observability import persist_workflow_observability
 
 
-def handle_tracking_chat(db: Session, payload: ChatRequest) -> ChatResponse:
+def handle_tracking_chat(db: Session, payload: ChatRequest, pre_classified_intent: str = "") -> ChatResponse:
     """
     Handles chat requests for the tracking workflow using a compiled LangGraph.
     """
@@ -19,14 +19,22 @@ def handle_tracking_chat(db: Session, payload: ChatRequest) -> ChatResponse:
         "tool_calls": [],  # Initialize tool calls list
     }
 
+    # If intent was already classified, inject it to skip redundant LLM call
+    if pre_classified_intent:
+        initial_state["detected_intent"] = pre_classified_intent
+
     # Invoke the graph to run the workflow
     final_state = graph.invoke(initial_state)
 
+    # Guard against None return from graph
+    if final_state is None:
+        final_state = dict(initial_state)
+
     # Extract data from the final state for the response
-    shipments = [ShipmentSummary(**shipment) for shipment in final_state.get("shipments", [])]
-    workflow_name = final_state.get("selected_workflow", "workflow_01_track_shipment")
-    detected_intent = final_state.get("detected_intent", "unknown")
-    response_text = final_state.get("customer_response", "No response generated.")
+    shipments = [ShipmentSummary(**shipment) for shipment in (final_state.get("shipments") or [])]
+    workflow_name = final_state.get("selected_workflow") or "workflow_01_track_shipment"
+    detected_intent = final_state.get("detected_intent") or "unknown"
+    response_text = final_state.get("customer_response") or "No response generated."
 
     workflow_state = TrackingWorkflowState(
         trace_id=final_state.get("trace_id"),
@@ -35,16 +43,16 @@ def handle_tracking_chat(db: Session, payload: ChatRequest) -> ChatResponse:
         raw_message=payload.message,
         detected_intent=detected_intent,
         selected_workflow=workflow_name,
-        active_order_ids=[order.get("id") for order in final_state.get("active_orders", []) if order.get("id")],
+        active_order_ids=[order.get("id") for order in (final_state.get("active_orders") or []) if order.get("id")],
         active_shipment_ids=[
-            shipment.get("id") for shipment in final_state.get("active_shipments", []) if shipment.get("id")
+            shipment.get("id") for shipment in (final_state.get("active_shipments") or []) if shipment.get("id")
         ],
         customer_name=(final_state.get("customer") or {}).get("name"),
         memory_summary=final_state.get("memory_summary"),
         fallback_reason=final_state.get("fallback_reason"),
         response_text=response_text,
-        active_shipments=final_state.get("shipments", []),
-        tool_logs=final_state.get("tool_calls", []),
+        active_shipments=(final_state.get("shipments") or []),
+        tool_logs=(final_state.get("tool_calls") or []),
     )
 
     # Persist observability data

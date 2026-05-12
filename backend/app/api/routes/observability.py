@@ -2,7 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.repositories.observability import get_agent_trace, get_case_for_trace, list_agent_traces, list_tool_logs
+from app.repositories.observability import (
+    get_agent_trace,
+    get_analytics_intents,
+    get_analytics_stats,
+    get_analytics_trend,
+    get_case_for_trace,
+    get_eval_summary,
+    list_agent_traces,
+    list_tool_logs,
+)
 from app.schemas.observability import (
     AgentTraceDetailResponse,
     AgentTraceSummaryResponse,
@@ -209,3 +218,36 @@ def read_tool_logs(
         )
         for log in logs
     ]
+
+
+@router.get("/analytics/stats")
+def read_analytics_stats(db: Session = Depends(get_db)) -> dict:
+    return get_analytics_stats(db)
+
+
+@router.get("/analytics/trend")
+def read_analytics_trend(
+    days: int = Query(default=12, ge=1, le=90),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    return get_analytics_trend(db, days=days)
+
+
+@router.get("/analytics/intents")
+def read_analytics_intents(db: Session = Depends(get_db)) -> list[dict]:
+    return get_analytics_intents(db)
+
+
+@router.get("/analytics/eval-summary")
+def read_eval_summary(db: Session = Depends(get_db)) -> dict:
+    return get_eval_summary(db)
+
+
+@router.get("/workspace/recent-runs")
+def read_recent_runs(
+    limit: int = Query(default=10, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Return recent agent traces with their tool calls — for Workspace live feed."""
+    from app.repositories.observability import get_recent_runs_with_tools
+    return get_recent_runs_with_tools(db, limit=limit)

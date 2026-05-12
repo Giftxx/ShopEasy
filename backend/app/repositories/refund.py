@@ -20,6 +20,8 @@ class RefundContext:
 
 
 def get_refund_context(db: Session, customer_id: str, conversation_id: str, order_id: str | None = None) -> RefundContext | None:
+    from datetime import datetime
+
     customer = db.get(Customer, customer_id)
     if customer is None:
         return None
@@ -31,7 +33,19 @@ def get_refund_context(db: Session, customer_id: str, conversation_id: str, orde
         )
     )
     if conversation is None:
-        return None
+        # Auto-create a conversation so the refund form works even without prior chat
+        now = datetime.utcnow()
+        conversation = Conversation(
+            id=conversation_id,
+            customer_id=customer_id,
+            channel="web_chat",
+            status="open",
+            latest_intent="refund_request",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(conversation)
+        db.flush()
 
     order_stmt = (
         select(Order)

@@ -14,6 +14,11 @@ import type {
   LoginRequest,
   LoginResponse,
   OrderSummary,
+  Policy,
+  PolicyCreate,
+  PolicyDetail,
+  PolicyDownloadUrl,
+  PolicySearchResult,
   ProactiveAlert,
   RefundRequest,
   RefundRequestDetail,
@@ -79,6 +84,8 @@ function withQuery(path: string, query: Record<string, string | number | undefin
 export const api = {
   login: (payload: LoginRequest) =>
     request<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  googleLogin: (payload: { credential: string }) =>
+    request<LoginResponse>('/auth/google', { method: 'POST', body: JSON.stringify(payload) }),
   getMe: () => request<User>('/auth/me'),
   getHealth: () => request<{ status: string }>('/health'),
   sendChat: (payload: ChatRequest) =>
@@ -96,6 +103,8 @@ export const api = {
     request<RefundRequest[]>(`/data/customers/${customerId}/refund-requests`),
   getCustomerRefundRequestDetail: (customerId: string, refundRequestId: string) =>
     request<RefundRequestDetail>(`/data/customers/${customerId}/refund-requests/${refundRequestId}`),
+  getCustomerProactiveAlerts: (customerId: string) =>
+    request<ProactiveAlert[]>(`/data/customers/${customerId}/proactive-alerts`),
   createCustomerRefundRequest: (customerId: string, payload: CustomerRefundCreateRequest) =>
     request<CustomerRefundCreateResponse>(`/data/customers/${customerId}/refund-requests`, {
       method: 'POST',
@@ -112,8 +121,33 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  uploadAttachmentDirect: async (
+    file: File,
+    refundRequestId: string,
+    evidenceGroup: string,
+    description?: string,
+  ): Promise<RefundRequestDetail['attachments'][number]> => {
+    const session = readSession()
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('refund_request_id', refundRequestId)
+    formData.append('evidence_group', evidenceGroup)
+    if (description) formData.append('description', description)
+    const response = await fetch(`${API_BASE}/attachments/upload-direct`, {
+      method: 'POST',
+      headers: session?.token ? { Authorization: `Bearer ${session.token}` } : {},
+      body: formData,
+    })
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(text || `Upload failed: ${response.status}`)
+    }
+    return response.json() as Promise<RefundRequestDetail['attachments'][number]>
+  },
   getAttachmentDownloadUrl: (attachmentId: string) =>
     request<AttachmentPresignResponse>(`/attachments/${attachmentId}/presign-download`),
+  getAttachmentDirectUrl: (attachmentId: string): string =>
+    `${API_BASE}/attachments/${attachmentId}/download`,
   getCases: () => request<CaseSummary[]>('/admin/cases'),
   getCaseDetail: (caseId: string) => request<CaseDetail>(`/admin/cases/${caseId}`),
   getApprovals: () => request<Approval[]>('/admin/approvals'),
@@ -180,4 +214,79 @@ export const api = {
         body: JSON.stringify({ shipment_id: shipmentId, event_type: 'shipment_no_update_48h' }),
       },
     ),
+  // ── Policy / RAG ──────────────────────────────────────────────────────────
+  getPolicies: () => request<Policy[]>('/ai/policies'),
+  getPolicyDetail: (policyId: string) => request<PolicyDetail>(`/ai/policies/${policyId}`),
+  createPolicy: (payload: PolicyCreate) =>
+    request<PolicyDetail>('/ai/policies', { method: 'POST', body: JSON.stringify(payload) }),
+  updatePolicyContent: (policyId: string, content: string) =>
+    request<PolicyDetail>(`/ai/policies/${policyId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
+  deletePolicy: (policyId: string) =>
+    request<void>(`/ai/policies/${policyId}`, { method: 'DELETE' }),
+  searchPolicies: (query: string, limit = 5, category?: string) =>
+    request<PolicySearchResult[]>(
+      withQuery('/ai/policies/search', { q: query, limit, category }),
+    ),
+  downloadPolicyFile: (policyId: string) =>
+    request<PolicyDownloadUrl>(`/ai/policies/${policyId}/download`),
+  uploadPolicyDocument: async (
+    file: File,
+    title: string,
+    category: string,
+    version: string,
+  ): Promise<PolicyDetail> => {
+    const session = readSession()
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('title', title)
+    formData.append('category', category)
+    formData.append('version', version)
+    const response = await fetch(`${API_BASE}/ai/policies/upload`, {
+      method: 'POST',
+      headers: session?.token ? { Authorization: `Bearer ${session.token}` } : {},
+      body: formData,
+    })
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(text || `Upload failed: ${response.status}`)
+    }
+    return response.json() as Promise<PolicyDetail>
+  },
+  // ── Analytics / Evaluation ────────────────────────────────────────────────
+  getAnalyticsStats: () => request<{
+    total_conversations: number
+    auto_resolution_rate: number
+    handoff_rate: number
+    avg_response_time: string
+    total_traces: number
+  }>('/ai/analytics/stats'),
+  getAnalyticsTrend: (days = 12) =>
+    request<{ date: string; count: number }[]>(withQuery('/ai/analytics/trend', { days })),
+  getAnalyticsIntents: () =>
+    request<{ label: string; pct: number; count: number }[]>('/ai/analytics/intents'),
+  getEvalSummary: () => request<{
+    total_traces: number
+    success: number
+    failed: number
+    partial: number
+    success_pct: number
+    failed_pct: number
+    partial_pct: number
+    last_run: string | null
+  }>('/ai/analytics/eval-summary'),
+  getRecentRuns: (limit = 10) =>
+    request<{
+      trace_id: string
+      workflow_name: string
+      intent: string
+      confidence: number | null
+      status: string
+      requires_human_approval: boolean
+      duration_ms: number | null
+      started_at: string | null
+      tools: { agent: string; tool: string; status: string; latency_ms: number | null }[]
+    }[]>(withQuery('/ai/workspace/recent-runs', { limit })),
 }

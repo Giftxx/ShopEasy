@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import Conversation, Customer, Order, Shipment
+from app.db.models.order import ShipmentItem, OrderItem
 
 
 ACTIVE_SHIPMENT_STATUSES = {"pending", "packing", "shipped", "in_transit", "out_for_delivery"}
@@ -39,7 +40,9 @@ def get_tracking_context(db: Session, customer_id: str, conversation_id: str) ->
             .options(
                 joinedload(Order.seller),
                 joinedload(Order.items),
-                joinedload(Order.shipments).joinedload(Shipment.shipment_items),
+                joinedload(Order.shipments)
+                    .joinedload(Shipment.shipment_items)
+                    .joinedload(ShipmentItem.order_item),
             )
             .where(Order.customer_id == customer_id)
             .order_by(Order.created_at.asc(), Order.id.asc())

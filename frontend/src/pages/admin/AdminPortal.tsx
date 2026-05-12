@@ -1,373 +1,363 @@
 import { useEffect, useState } from 'react'
-
-import { PortalShell } from '../../components/PortalShell'
-import { Sidebar } from '../../components/Sidebar'
-import { StatCard } from '../../components/StatCard'
-import { Surface } from '../../components/Surface'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api'
-import { readSession } from '../../lib/session'
+import { clearSession, readSession } from '../../lib/session'
 import type { Approval, CaseDetail, CaseSummary, ProactiveAlert, RefundRequest } from '../../types/api'
 
-const navItems = [
-  { key: 'dashboard', label: 'Dashboard', icon: '📊' },
-  { key: 'cases', label: 'Cases', icon: '🗂' },
-  { key: 'approvals', label: 'Approvals', icon: '✅' },
-  { key: 'refunds', label: 'Refund / Return', icon: '♻️' },
-  { key: 'alerts', label: 'Proactive Alerts', icon: '📍' },
+type AdminTab = 'cases' | 'approvals' | 'refunds' | 'alerts'
+
+const NAV: { key: AdminTab; label: string; icon: string }[] = [
+  { key: 'cases',     label: 'Cases',            icon: '▣' },
+  { key: 'approvals', label: 'Approvals',        icon: '✓' },
+  { key: 'refunds',   label: 'Refund / Return',  icon: '↩' },
+  { key: 'alerts',    label: 'Proactive Alerts', icon: '◉' },
 ]
 
+function pillClass(status?: string | null): string {
+  const s = (status ?? '').toLowerCase()
+  if (['approved', 'resolved', 'closed', 'completed', 'success'].includes(s)) return 'status-pill--success'
+  if (['pending', 'open', 'processing'].includes(s)) return 'status-pill--warning'
+  if (['rejected', 'failed', 'high', 'critical'].includes(s)) return 'status-pill--danger'
+  return ''
+}
+
+function riskClass(score?: number | null): string {
+  if (score == null) return ''
+  if (score >= 70) return 'risk--high'
+  if (score >= 40) return 'risk--medium'
+  return 'risk--low'
+}
+
 export function AdminPortal() {
+  const navigate = useNavigate()
   const session = readSession()
   const userName = session?.user?.name ?? 'Admin'
 
-  const [activeTab, setActiveTab] = useState('dashboard')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = (searchParams.get('tab') as AdminTab) ?? 'cases'
+  const setTab = (t: AdminTab) => setSearchParams({ tab: t }, { replace: true })
   const [cases, setCases] = useState<CaseSummary[]>([])
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [refunds, setRefunds] = useState<RefundRequest[]>([])
   const [alerts, setAlerts] = useState<ProactiveAlert[]>([])
-  const [message, setMessage] = useState<string | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
   const [selectedCase, setSelectedCase] = useState<CaseDetail | null>(null)
-  const [caseDetailLoading, setCaseDetailLoading] = useState(false)
-  const [openingAttachmentId, setOpeningAttachmentId] = useState<string | null>(null)
+  const [caseLoading, setCaseLoading] = useState(false)
+  const [openingAttId, setOpeningAttId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
 
-  function showMessage(msg: string) {
-    setMessage(msg)
-    setTimeout(() => setMessage(null), 4000)
+  function notify(msg: string, type: 'ok' | 'err' = 'ok') {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 3000)
   }
 
   async function load() {
-    setLoadError(null)
+    setLoading(true)
     try {
-      const [casesData, approvalsData, refundsData, alertsData] = await Promise.all([
-        api.getCases(),
-        api.getApprovals(),
-        api.getRefundRequests(),
-        api.getProactiveAlerts(),
+      const [c, a, r, al] = await Promise.all([
+        api.getCases(), api.getApprovals(), api.getRefundRequests(), api.getProactiveAlerts(),
       ])
-      setCases(casesData)
-      setApprovals(approvalsData)
-      setRefunds(refundsData)
-      setAlerts(alertsData)
+      setCases(c); setApprovals(a); setRefunds(r); setAlerts(al)
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Load failed')
-    }
-  }
-
-  useEffect(() => {
-    void load()
-  }, [])
-
-  async function loadCaseDetail(caseId: string) {
-    setCaseDetailLoading(true)
-    try {
-      const detail = await api.getCaseDetail(caseId)
-      setSelectedCase(detail)
-      setActiveTab('cases')
+      notify(err instanceof Error ? err.message : 'Load failed', 'err')
     } finally {
-      setCaseDetailLoading(false)
+      setLoading(false)
     }
   }
 
-  async function handleApprovalAction(type: 'approve' | 'reject', approvalId: string) {
+  useEffect(() => { void load() }, [])
+
+  async function openCase(id: string) {
+    setCaseLoading(true); setTab('cases')
+    try { setSelectedCase(await api.getCaseDetail(id)) }
+    finally { setCaseLoading(false) }
+  }
+
+  async function handleApproval(type: 'approve' | 'reject', id: string) {
     try {
-      if (type === 'approve') {
-        await api.approveApproval(approvalId, 'Approved from admin portal.')
-        showMessage(`Approved ${approvalId}`)
-      } else {
-        await api.rejectApproval(approvalId, 'Rejected from admin portal.')
-        showMessage(`Rejected ${approvalId}`)
-      }
+      if (type === 'approve') await api.approveApproval(id, 'Approved')
+      else await api.rejectApproval(id, 'Rejected')
+      notify(type === 'approve' ? 'Approved' : 'Rejected')
       await load()
-    } catch (err) {
-      showMessage(err instanceof Error ? err.message : 'Action failed')
-    }
+    } catch { notify('Action failed', 'err') }
   }
 
-  async function handleCloseCase(caseId: string) {
+  async function handleCloseCase(id: string) {
     try {
-      await api.closeCase(caseId, 'Closed from admin portal.')
-      showMessage(`Closed ${caseId}`)
+      await api.closeCase(id, 'Closed')
+      notify('Case closed')
       await load()
-      if (selectedCase?.id === caseId) {
-        await loadCaseDetail(caseId)
-      }
-    } catch (err) {
-      showMessage(err instanceof Error ? err.message : 'Close failed')
-    }
+      if (selectedCase?.id === id) await openCase(id)
+    } catch { notify('Failed', 'err') }
   }
 
-  async function handleResolveAlert(alertId: string) {
+  async function handleResolveAlert(id: string) {
     try {
-      await api.resolveAlert(alertId, 'Resolved from admin portal.')
-      showMessage(`Resolved ${alertId}`)
+      await api.resolveAlert(id, 'Resolved')
+      notify('Alert resolved')
       await load()
-    } catch (err) {
-      showMessage(err instanceof Error ? err.message : 'Resolve failed')
-    }
+    } catch { notify('Failed', 'err') }
   }
 
-  async function openAttachment(attachmentId: string) {
-    setOpeningAttachmentId(attachmentId)
-    try {
-      const presign = await api.getAttachmentDownloadUrl(attachmentId)
-      window.open(presign.upload_url, '_blank', 'noopener,noreferrer')
-    } finally {
-      setOpeningAttachmentId(null)
-    }
+  function openAttachment(id: string) {
+    window.open(api.getAttachmentDirectUrl(id), '_blank', 'noopener,noreferrer')
   }
+
+  const pendingApprovals = approvals.filter(a => a.status === 'pending')
+  const openAlerts = alerts.filter(a => a.status !== 'resolved')
 
   return (
-    <PortalShell
-      badge="Admin Portal"
-      heading="ShopEasy Operations Console"
-      caption="ภาพรวมเคส อนุมัติ และงาน proactive สำหรับทีมหลังบ้าน"
-    >
-      <div className="portal-layout">
-        <Sidebar
-          title="ShopEasy"
-          subtitle="Admin Console"
-          accent="linear-gradient(135deg, #365eff, #6b4dff)"
-          items={navItems}
-          activeKey={activeTab}
-          onSelect={setActiveTab}
-          footer={
-            <div className="sidebar-profile">
-              <strong>{userName}</strong>
-              <span>{session?.user?.email ?? 'admin'}</span>
-            </div>
-          }
-        />
-
-        <div className="portal-main">
-          {/* Stats bar — always visible */}
-          <div className="stats-grid">
-            <StatCard label="Cases" value={String(cases.length)} hint="open / recent" />
-            <StatCard label="Approvals" value={String(approvals.length)} hint="manual review queue" tone="warning" />
-            <StatCard label="Refund Requests" value={String(refunds.length)} hint="customer refund workload" />
-            <StatCard label="Proactive Alerts" value={String(alerts.length)} hint="delay monitoring" tone="danger" />
+    <div className="op-app">
+      {/* ── Sidebar ── */}
+      <aside className="op-sidebar">
+        <div className="op-brand">
+          <div className="op-brand__logo">S</div>
+          <div>
+            <span className="op-brand__name">ShopEasy</span>
+            <span className="op-brand__role">Admin Console</span>
           </div>
-
-          {loadError ? <div className="notice notice--error">{loadError}</div> : null}
-          {message ? <div className="notice notice--success">{message}</div> : null}
-
-          {/* ── Dashboard ── */}
-          {activeTab === 'dashboard' && (
-            <div className="dashboard-grid dashboard-grid--admin">
-              <Surface title="Cases" subtitle="Case queue for operations">
-                <div className="table-list">
-                  {cases.map((item) => (
-                    <article key={item.id} className="table-row">
-                      <div>
-                        <strong>{item.id}</strong>
-                        <p>{item.order_id}</p>
-                      </div>
-                      <span>{item.case_type}</span>
-                      <span>{item.priority}</span>
-                      <span className="status-pill">{item.status}</span>
-                      <button type="button" className="ghost-button" onClick={() => void loadCaseDetail(item.id)}>
-                        View
-                      </button>
-                      <button type="button" className="ghost-button" onClick={() => void handleCloseCase(item.id)}>
-                        Close
-                      </button>
-                    </article>
-                  ))}
-                </div>
-              </Surface>
-
-              <Surface title="Approvals" subtitle="Human-in-the-loop actions">
-                <div className="table-list">
-                  {approvals.slice(0, 3).map((item) => (
-                    <article key={item.id} className="approval-card">
-                      <div className="approval-card__top">
-                        <strong>{item.id}</strong>
-                        <span className="status-pill">{item.status}</span>
-                      </div>
-                      <p>{item.requested_action}</p>
-                      <div className="approval-card__actions">
-                        <button type="button" className="success-button" onClick={() => void handleApprovalAction('approve', item.id)}>
-                          Approve
-                        </button>
-                        <button type="button" className="danger-button" onClick={() => void handleApprovalAction('reject', item.id)}>
-                          Reject
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </Surface>
+        </div>
+        <nav className="op-nav">
+          {NAV.map(item => (
+            <button
+              key={item.key}
+              type="button"
+              className={`op-nav-item${tab === item.key ? ' is-active' : ''}`}
+              onClick={() => setTab(item.key)}
+            >
+              <span className="op-nav-item__icon">{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="op-sidebar-stats">
+          <div className="op-sstat"><strong>{cases.length}</strong><span>Cases</span></div>
+          <div className="op-sstat op-sstat--warn"><strong>{pendingApprovals.length}</strong><span>Pending</span></div>
+          <div className="op-sstat op-sstat--danger"><strong>{openAlerts.length}</strong><span>Alerts</span></div>
+          <div className="op-sstat"><strong>{refunds.length}</strong><span>Refunds</span></div>
+        </div>
+        <div className="op-sidebar-footer">
+          <div className="op-user">
+            <div className="op-user__avatar">{userName.charAt(0).toUpperCase()}</div>
+            <div className="op-user__info">
+              <strong>{userName}</strong>
+              <span>Admin</span>
             </div>
-          )}
+          </div>
+          <button
+            type="button"
+            className="op-logout-btn"
+            onClick={() => { clearSession(); navigate('/') }}
+          >
+            Sign out
+          </button>
+        </div>
+      </aside>
 
-          {/* ── Cases ── */}
-          {activeTab === 'cases' && (
-            <div className="dashboard-grid dashboard-grid--admin">
-              <Surface title="Cases" subtitle="Case queue for operations">
-                <div className="table-list">
-                  {cases.map((item) => (
-                    <article key={item.id} className="table-row">
-                      <div>
-                        <strong>{item.id}</strong>
-                        <p>{item.order_id}</p>
+      {/* ── Main ── */}
+      <div className="op-main">
+        <div className="op-topbar">
+          <h2 className="op-topbar__title">{NAV.find(n => n.key === tab)?.label}</h2>
+          <div className="op-topbar__right">
+            {loading && <span className="op-loading-badge">Loading…</span>}
+            {toast && <span className={`op-toast op-toast--${toast.type}`}>{toast.msg}</span>}
+            <button type="button" className="op-btn op-btn--ghost" onClick={() => void load()} disabled={loading}>
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="op-content">
+          {/* Cases */}
+          {tab === 'cases' && (
+            <div className="op-split">
+              <div className="op-card">
+                <div className="op-card__head">
+                  <h3>All Cases</h3>
+                  <span className="op-count">{cases.length}</span>
+                </div>
+                <div className="op-table">
+                  {cases.map(c => (
+                    <div
+                      key={c.id}
+                      className={`op-row op-row--clickable${selectedCase?.id === c.id ? ' is-selected' : ''}`}
+                      onClick={() => void openCase(c.id)}
+                    >
+                      <div className="op-row__main">
+                        <strong>{c.id}</strong>
+                        <span>{c.case_type} · {c.order_id}</span>
                       </div>
-                      <span>{item.case_type}</span>
-                      <span>{item.priority}</span>
-                      <span className="status-pill">{item.status}</span>
-                      <button type="button" className="ghost-button" onClick={() => void loadCaseDetail(item.id)}>
-                        View
-                      </button>
-                      <button type="button" className="ghost-button" onClick={() => void handleCloseCase(item.id)}>
+                      <span className={`status-pill ${pillClass(c.priority)}`}>{c.priority ?? 'normal'}</span>
+                      <span className={`status-pill ${pillClass(c.status)}`}>{c.status}</span>
+                      <button
+                        type="button"
+                        className="op-btn op-btn--ghost"
+                        onClick={e => { e.stopPropagation(); void handleCloseCase(c.id) }}
+                      >
                         Close
                       </button>
-                    </article>
-                  ))}
-                </div>
-              </Surface>
-
-              <Surface title="Case Detail" subtitle="Refund evidence and approval context">
-                {caseDetailLoading ? <div className="notice">Loading case detail...</div> : null}
-                {!caseDetailLoading && !selectedCase ? <div className="empty-state">Select a case to inspect evidence.</div> : null}
-                {!caseDetailLoading && selectedCase ? (
-                  <div className="admin-case-detail">
-                    <div className="admin-case-detail__header">
-                      <div>
-                        <strong>{selectedCase.id}</strong>
-                        <p>{selectedCase.case_type} · {selectedCase.status}</p>
-                      </div>
-                      <span className="status-pill">{selectedCase.priority ?? 'normal'}</span>
                     </div>
+                  ))}
+                  {cases.length === 0 && <p className="op-empty">No cases</p>}
+                </div>
+              </div>
 
-                    <div className="admin-case-detail__section">
-                      <strong>Refund Requests</strong>
-                      <div className="list-stack">
-                        {selectedCase.refund_requests.map((refund) => (
-                          <article key={refund.id} className="list-card">
-                            <div>
-                              <strong>{refund.id}</strong>
-                              <p>{refund.reason}</p>
+              <div className="op-card">
+                <div className="op-card__head"><h3>Detail</h3></div>
+                {caseLoading && <p className="op-empty">Loading...</p>}
+                {!caseLoading && !selectedCase && <p className="op-empty">Select a case to inspect</p>}
+                {!caseLoading && selectedCase && (
+                  <div className="op-detail">
+                    <div className="op-detail__header">
+                      <div>
+                        <strong className="op-detail__id">{selectedCase.id}</strong>
+                        <span className="op-detail__meta">{selectedCase.case_type}</span>
+                      </div>
+                      <span className={`status-pill ${pillClass(selectedCase.status)}`}>{selectedCase.status}</span>
+                    </div>
+                    {selectedCase.refund_requests.length > 0 && (
+                      <div className="op-detail-section">
+                        <span className="op-detail-section__label">Refund Requests</span>
+                        {selectedCase.refund_requests.map(r => (
+                          <div key={r.id} className="op-detail-block">
+                            <div className="op-detail-block__head">
+                              <strong>{r.id}</strong>
+                              <span className={`op-meta-chip ${riskClass(r.risk_score)}`}>Risk {r.risk_score}</span>
+                              <span className={`status-pill ${pillClass(r.status)}`}>{r.status}</span>
                             </div>
-                            <div className="list-card__meta">
-                              <span>Risk {refund.risk_score}</span>
-                              <span className="status-pill">{refund.status}</span>
-                            </div>
-                            {refund.attachments.length > 0 ? (
-                              <div className="admin-attachment-list">
-                                {refund.attachments.map((attachment) => (
-                                  <div key={attachment.id} className="admin-attachment-item">
-                                    <div>
-                                      <strong>{attachment.file_name ?? attachment.id}</strong>
-                                      <p>{attachment.description ?? attachment.evidence_group ?? 'evidence'}</p>
-                                    </div>
+                            {r.reason && <p className="op-detail-block__text">{r.reason}</p>}
+                            {r.attachments.length > 0 && (
+                              <div className="op-att-list">
+                                {r.attachments.map(att => (
+                                  <div key={att.id} className="op-att-row">
+                                    <span>{att.file_name ?? att.id}</span>
                                     <button
                                       type="button"
-                                      className="ghost-button"
-                                      onClick={() => void openAttachment(attachment.id)}
-                                      disabled={openingAttachmentId === attachment.id}
+                                      className="op-btn op-btn--ghost"
+                                      onClick={() => openAttachment(att.id)}
+                                      disabled={openingAttId === att.id}
                                     >
-                                      {openingAttachmentId === attachment.id ? 'Opening...' : 'Open'}
+                                      {openingAttId === att.id ? '...' : 'Open'}
                                     </button>
                                   </div>
                                 ))}
                               </div>
-                            ) : null}
-                          </article>
+                            )}
+                          </div>
                         ))}
                       </div>
-                    </div>
-
-                    <div className="admin-case-detail__section">
-                      <strong>Approvals</strong>
-                      <div className="list-stack">
-                        {selectedCase.approvals.map((approval) => (
-                          <article key={approval.id} className="list-card">
-                            <div>
-                              <strong>{approval.id}</strong>
-                              <p>{approval.requested_action}</p>
+                    )}
+                    {selectedCase.approvals.length > 0 && (
+                      <div className="op-detail-section">
+                        <span className="op-detail-section__label">Approvals</span>
+                        {selectedCase.approvals.map(a => (
+                          <div key={a.id} className="op-detail-block">
+                            <div className="op-detail-block__head">
+                              <strong>{a.id}</strong>
+                      <span className={`op-meta-chip ${riskClass(a.risk_score)}`}>{a.risk_level}</span>
+                              <span className={`status-pill ${pillClass(a.status)}`}>{a.status}</span>
                             </div>
-                            <div className="list-card__meta">
-                              <span>{approval.risk_level}</span>
-                              <span className="status-pill">{approval.status}</span>
-                            </div>
-                          </article>
+                            <p className="op-detail-block__text">{a.requested_action}</p>
+                          </div>
                         ))}
                       </div>
-                    </div>
+                    )}
                   </div>
-                ) : null}
-              </Surface>
+                )}
+              </div>
             </div>
           )}
 
-          {/* ── Approvals ── */}
-          {activeTab === 'approvals' && (
-            <Surface title="Approvals" subtitle="Human-in-the-loop actions">
-              <div className="table-list">
-                {approvals.map((item) => (
-                  <article key={item.id} className="approval-card">
-                    <div className="approval-card__top">
-                      <strong>{item.id}</strong>
-                      <span className="status-pill">{item.status}</span>
-                    </div>
-                    <p>{item.requested_action}</p>
-                    <small>{item.ai_reason}</small>
-                    <div className="approval-card__actions">
-                      <button type="button" className="success-button" onClick={() => void handleApprovalAction('approve', item.id)}>
-                        Approve
-                      </button>
-                      <button type="button" className="danger-button" onClick={() => void handleApprovalAction('reject', item.id)}>
-                        Reject
-                      </button>
-                    </div>
-                  </article>
-                ))}
+          {/* Approvals */}
+          {tab === 'approvals' && (
+            <div className="op-card">
+              <div className="op-card__head">
+                <h3>Approvals Queue</h3>
+                <span className="op-count">{approvals.length}</span>
               </div>
-            </Surface>
+              <div className="op-table">
+                {approvals.map(a => (
+                  <div key={a.id} className="op-row op-row--wrap">
+                    <div className="op-row__main" style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                        <strong>{a.id}</strong>
+                        <span className={`status-pill ${pillClass(a.status)}`}>{a.status}</span>
+                      </div>
+                      <span>{a.requested_action}</span>
+                      {a.ai_reason && <span className="op-ai-note">{a.ai_reason}</span>}
+                    </div>
+                    {a.status === 'pending' && (
+                      <div className="op-btn-group">
+                        <button type="button" className="op-btn op-btn--approve" onClick={() => void handleApproval('approve', a.id)}>Approve</button>
+                        <button type="button" className="op-btn op-btn--reject" onClick={() => void handleApproval('reject', a.id)}>Reject</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {approvals.length === 0 && <p className="op-empty">No approvals</p>}
+              </div>
+            </div>
           )}
 
-          {/* ── Refunds ── */}
-          {activeTab === 'refunds' && (
-            <Surface title="Refund / Return" subtitle="Caseworker workspace">
-              <div className="list-stack">
-                {refunds.map((item) => (
-                  <article key={item.id} className="list-card">
-                    <div>
-                      <strong>{item.id}</strong>
-                      <p>{item.order_id}</p>
-                    </div>
-                    <div className="list-card__meta">
-                      <span>Risk {item.risk_score}</span>
-                      <span className="status-pill">{item.status}</span>
-                    </div>
-                  </article>
-                ))}
+          {/* Refunds */}
+          {tab === 'refunds' && (
+            <div className="op-card">
+              <div className="op-card__head">
+                <h3>Refund Requests</h3>
+                <span className="op-count">{refunds.length}</span>
               </div>
-            </Surface>
+              <div className="op-table">
+                {refunds.map(r => (
+                  <div key={r.id} className="op-row">
+                    <div className="op-row__main">
+                      <strong>{r.id}</strong>
+                      <span>{r.order_id} · {r.customer_id}</span>
+                      {r.reason && <span className="op-row__note">{r.reason}</span>}
+                    </div>
+                    <span className={`op-meta-chip ${riskClass(r.risk_score)}`}>Risk {r.risk_score}</span>
+                    <span className={`status-pill ${pillClass(r.status)}`}>{r.status}</span>
+                    {r.case_id && (
+                      <button type="button" className="op-btn op-btn--ghost" onClick={() => void openCase(r.case_id!)}>Case</button>
+                    )}
+                  </div>
+                ))}
+                {refunds.length === 0 && <p className="op-empty">No refund requests</p>}
+              </div>
+            </div>
           )}
 
-          {/* ── Proactive Alerts ── */}
-          {activeTab === 'alerts' && (
-            <Surface title="Proactive Alerts" subtitle="Shipment delay watchlist">
-              <div className="list-stack">
-                {alerts.map((item) => (
-                  <article key={item.id} className="list-card">
-                    <div>
-                      <strong>{item.id}</strong>
-                      <p>{item.shipment_id}</p>
-                    </div>
-                    <div className="list-card__meta">
-                      <span>Risk {item.risk_score}</span>
-                      <button type="button" className="ghost-button" onClick={() => void handleResolveAlert(item.id)}>
-                        Resolve
-                      </button>
-                    </div>
-                  </article>
-                ))}
+          {/* Alerts */}
+          {tab === 'alerts' && (
+            <div className="op-card">
+              <div className="op-card__head">
+                <h3>Proactive Alerts</h3>
+                <span className="op-count">{openAlerts.length} open</span>
               </div>
-            </Surface>
+              <div className="op-table">
+                {alerts.map(a => (
+                  <div key={a.id} className="op-row">
+                    <div className="op-row__main">
+                      <strong>{a.id}</strong>
+                      <span>{a.shipment_id}{a.order_id ? ` · ${a.order_id}` : ''}</span>
+                      {a.message_draft && (
+                        <span className="op-row__note">
+                          {a.message_draft.length > 90 ? `${a.message_draft.slice(0, 90)}…` : a.message_draft}
+                        </span>
+                      )}
+                    </div>
+                    <span className={`op-meta-chip ${riskClass(a.risk_score)}`}>Risk {a.risk_score}</span>
+                    <span className={`status-pill ${pillClass(a.status)}`}>{a.status}</span>
+                    {a.status !== 'resolved' && (
+                      <button type="button" className="op-btn op-btn--ghost" onClick={() => void handleResolveAlert(a.id)}>Resolve</button>
+                    )}
+                  </div>
+                ))}
+                {alerts.length === 0 && <p className="op-empty">No alerts</p>}
+              </div>
+            </div>
           )}
         </div>
       </div>
-    </PortalShell>
+    </div>
   )
 }

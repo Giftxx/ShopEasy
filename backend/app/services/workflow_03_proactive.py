@@ -4,6 +4,7 @@ from app.agents.nodes.proactive_nodes import (
     event_ingestion_node,
     proactive_alert_node,
     proactive_approval_node,
+    proactive_carrier_notify_node,
     proactive_case_node,
     proactive_context_resolution_node,
     proactive_logging_node,
@@ -28,7 +29,7 @@ def handle_proactive_event(db: Session, payload: ProactiveEventRequest) -> Proac
             "proactive_alert_node",
             "supervisor_node",
             "approval_node",
-            "support_response_node",
+            "carrier_notify_node",
             "memory_write_node",
             "logging_node",
         ],
@@ -43,12 +44,13 @@ def handle_proactive_event(db: Session, payload: ProactiveEventRequest) -> Proac
     state, context = proactive_context_resolution_node(db, state, payload.shipment_id)
     state.conversation_id = f"SYSTEM-{payload.shipment_id}"
     state, stale_update, risk_score = proactive_shipping_node(state, context)
-    state = proactive_policy_rag_node(state, context)
+    state = proactive_policy_rag_node(state, context, db)
     state, alert = proactive_alert_node(db, state, context, risk_score)
     state = proactive_supervisor_node(state, risk_score)
     state, case = proactive_case_node(db, state, context, alert)
     state = proactive_approval_node(db, state, case, risk_score)
-    state = proactive_memory_write_node(state, case, alert)
+    state = proactive_carrier_notify_node(db, state, context, alert)
+    state = proactive_memory_write_node(db, state, case, alert)
     state = proactive_logging_node(state)
     trace_id = persist_workflow_observability(db, state, graph_definition["workflow_name"], case_id=case.id)
     db.commit()

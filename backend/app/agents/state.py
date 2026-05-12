@@ -116,3 +116,6 @@ class TrackingWorkflowState(BaseModel):
     response_text: str | None = None
     active_shipments: list[dict[str, Any]] = Field(default_factory=list)
     tool_logs: list[dict[str, Any]] = Field(default_factory=list)
+    # RAG results from policy_rag_node
+    policy_chunks: list[str] = Field(default_factory=list)
+    policy_titles: list[str] = Field(default_factory=list)

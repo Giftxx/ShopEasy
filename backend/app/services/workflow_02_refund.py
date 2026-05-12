@@ -52,10 +52,10 @@ def handle_refund_chat(db: Session, payload: ChatRequest) -> ChatResponse:
 
     state = refund_router_node(state)
     state, context = refund_context_resolution_node(db, state)
-    state = refund_memory_retrieval_node(state, context)
-    state = refund_planner_node(state)
+    state = refund_memory_retrieval_node(db, state, context)
+    state = refund_planner_node(db, state)
     state = refund_order_node(state, context)
-    state = policy_rag_node(state, context)
+    state = policy_rag_node(state, context, db)
     state, refund_request = refund_node(db, state, context)
     state, evidence_result = evidence_node(state, context)
     state = risk_node(db, state, context, refund_request, evidence_result)
@@ -63,7 +63,7 @@ def handle_refund_chat(db: Session, payload: ChatRequest) -> ChatResponse:
     state, case = ensure_case_node(db, state, context, refund_request)
     state = approval_node(db, state, case, refund_request)
     state = refund_support_response_node(state, context, case, evidence_result)
-    state = refund_memory_write_node(state, case)
+    state = refund_memory_write_node(db, state, case, refund_request)
     state = refund_logging_node(state)
     workflow_name = state.selected_workflow or graph_definition["workflow_name"]
     trace_id = persist_workflow_observability(db, state, workflow_name, case_id=case.id)

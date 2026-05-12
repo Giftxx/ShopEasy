@@ -30,6 +30,13 @@ app.add_middleware(
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 
+@app.on_event("startup")
+def startup_register_tools():
+    """Register all agent tools at application startup."""
+    from app.agents.tools.definitions import register_all_tools
+    register_all_tools()
+
+
 @app.get("/", tags=["root"])
 def read_root() -> dict[str, str]:
     return {

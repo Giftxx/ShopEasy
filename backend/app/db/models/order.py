@@ -43,6 +43,8 @@ class Order(TimestampMixin, Base):
     total_amount: Mapped[float | None] = mapped_column(Numeric(10, 2))
     currency: Mapped[str] = mapped_column(String(10), default="THB", nullable=False)
     promised_delivery_date: Mapped[date | None] = mapped_column(Date)
+    shopify_order_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    shopify_order_id: Mapped[str | None] = mapped_column(String(100), unique=True)
 
     customer: Mapped["Customer"] = relationship(back_populates="orders")
     seller: Mapped["Seller"] = relationship(back_populates="orders")
@@ -104,6 +106,8 @@ class Shipment(TimestampMixin, Base):
     eta: Mapped[date | None] = mapped_column(Date)
     last_update: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
     delay_risk_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    shopify_fulfillment_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    shopify_fulfillment_id: Mapped[str | None] = mapped_column(String(100), unique=True)
 
     order: Mapped["Order"] = relationship(back_populates="shipments")
     shipment_items: Mapped[list["ShipmentItem"]] = relationship(back_populates="shipment")

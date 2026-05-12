@@ -5,7 +5,7 @@ from uuid import uuid4
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.db.models import Attachment, Conversation, Message, Order, RefundRequest, Shipment, User
+from app.db.models import Attachment, Conversation, Message, Order, ProactiveAlert, RefundRequest, Shipment, User
 from app.schemas.attachment import ConfirmUploadRequest
 
 
@@ -35,7 +35,7 @@ def get_order(db: Session, order_id: str) -> Order | None:
 def list_customer_shipments(db: Session, customer_id: str) -> list[Shipment]:
     stmt: Select[tuple[Shipment]] = (
         select(Shipment)
-        .options(joinedload(Shipment.order))
+        .options(joinedload(Shipment.order), joinedload(Shipment.events))
         .join(Order, Shipment.order_id == Order.id)
         .where(Order.customer_id == customer_id)
         .order_by(Shipment.created_at.desc(), Shipment.id.desc())
@@ -86,6 +86,16 @@ def list_customer_refund_requests(db: Session, customer_id: str) -> list[RefundR
         .order_by(RefundRequest.created_at.desc(), RefundRequest.id.desc())
     )
     return list(db.scalars(stmt))
+
+
+def list_customer_proactive_alerts(db: Session, customer_id: str) -> list[ProactiveAlert]:
+    stmt: Select[tuple[ProactiveAlert]] = (
+        select(ProactiveAlert)
+        .join(Order, ProactiveAlert.order_id == Order.id)
+        .where(Order.customer_id == customer_id)
+        .order_by(ProactiveAlert.created_at.desc(), ProactiveAlert.id.desc())
+    )
+    return list(db.scalars(stmt).unique())
 
 
 def get_refund_request(db: Session, refund_request_id: str) -> RefundRequest | None:

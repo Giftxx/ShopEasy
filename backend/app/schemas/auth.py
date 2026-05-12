@@ -15,6 +15,10 @@ class LoginResponse(BaseModel):
     customer_id: str | None = None
 
 
+class GoogleLoginRequest(BaseModel):
+    credential: str = Field(..., description="Google ID token from Google Identity Services")
+
+
 # kept for backward-compat during transition
 class MockLoginRequest(BaseModel):
     role: str = Field(..., description="Role: customer, admin, or ai_control")

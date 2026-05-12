@@ -1,97 +1,518 @@
-import { SvgIcon } from '../components/SvgIcon'
-import { SectionHeader } from '../components/SectionHeader'
+import { useEffect, useState } from 'react'
+import { api } from '../../../lib/api'
 
-const AGENTS = [
-  { name: 'Router Agent', color: '#4f86ff' },
-  { name: 'Order Agent', color: '#4ed4a0' },
-  { name: 'Shipping Agent', color: '#f0b847' },
-  { name: 'Policy Agent', color: '#ff7ac9' },
-  { name: 'Refund Agent', color: '#ff6fc2' },
-  { name: 'Risk Agent', color: '#ff6256' },
-  { name: 'Supervisor Agent', color: '#ff9846' },
-  { name: 'Support Agent', color: '#5bd4cb' },
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type NodeType = 'llm_router' | 'router' | 'lookup' | 'policy' | 'validate' | 'risk' | 'generate' | 'alert' | 'ingest'
+
+type WFNode = {
+  id: string
+  label: string
+  type: NodeType
+}
+
+type Workflow = {
+  id: string
+  name: string
+  description: string
+  color: string
+  nodes: WFNode[]
+}
+
+// ── Live Run Types ────────────────────────────────────────────────────────────
+
+type ToolCall = { agent: string; tool: string; status: string; latency_ms: number | null }
+type RecentRun = {
+  trace_id: string
+  workflow_name: string
+  intent: string
+  confidence: number | null
+  status: string
+  requires_human_approval: boolean
+  duration_ms: number | null
+  started_at: string | null
+  tools: ToolCall[]
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const NODE_STYLE: Record<NodeType, { color: string; bg: string }> = {
+  llm_router: { color: '#f5a878', bg: '#fff7f2' },
+  router:     { color: '#89b4f7', bg: '#eef4ff' },
+  lookup:     { color: '#76c9a0', bg: '#f0fbf6' },
+  policy:     { color: '#b8a0e8', bg: '#f5f2ff' },
+  validate:   { color: '#f0c870', bg: '#fffdf0' },
+  risk:       { color: '#f09090', bg: '#fff5f5' },
+  generate:   { color: '#f5a878', bg: '#fff7f2' },
+  alert:      { color: '#f0d878', bg: '#fdfef0' },
+  ingest:     { color: '#a8b8cc', bg: '#f7f9fc' },
+}
+
+const NODE_PALETTE: { label: string; type: NodeType; note?: string }[] = [
+  { label: 'LLM Router',        type: 'llm_router', note: 'LLM classifies intent' },
+  { label: 'Lookup Shipment',   type: 'lookup'   },
+  { label: 'Lookup Order',      type: 'lookup'   },
+  { label: 'Check Policy',      type: 'policy'   },
+  { label: 'RAG Search',        type: 'policy'   },
+  { label: 'Validate Refund',   type: 'validate' },
+  { label: 'Risk Assessment',   type: 'risk'     },
+  { label: 'Generate Response', type: 'generate' },
+  { label: 'Send Alert',        type: 'alert'    },
+  { label: 'Event Ingestion',   type: 'ingest'   },
 ]
 
-export function WorkspaceTab() {
+const WF_COLORS = ['#89b4f7', '#f5a878', '#f08898', '#76c9a0', '#b8a0e8', '#f0c870', '#a8b8cc', '#f5b8d8']
+
+const INITIAL_WORKFLOWS: Workflow[] = [
+  {
+    id: 'wf01',
+    name: 'WF01 · Tracking',
+    description: 'LLM routes → shipment lookup → Ollama response',
+    color: '#89b4f7',
+    nodes: [
+      { id: 'wf01-n1', label: 'LLM Router',        type: 'llm_router' },
+      { id: 'wf01-n2', label: 'Resolve Context',   type: 'lookup'     },
+      { id: 'wf01-n3', label: 'Memory Retrieval',  type: 'lookup'     },
+      { id: 'wf01-n4', label: 'Plan Response',     type: 'router'     },
+      { id: 'wf01-n5', label: 'Fetch Shipments',   type: 'lookup'     },
+      { id: 'wf01-n6', label: 'Generate Response', type: 'generate'   },
+    ],
+  },
+  {
+    id: 'wf02',
+    name: 'WF02 · Refund',
+    description: 'LLM routes → evidence eval → RAG policy → Ollama response',
+    color: '#f5a878',
+    nodes: [
+      { id: 'wf02-n1', label: 'LLM Router',        type: 'llm_router' },
+      { id: 'wf02-n2', label: 'Resolve Context',   type: 'lookup'     },
+      { id: 'wf02-n3', label: 'Memory Retrieval',  type: 'lookup'     },
+      { id: 'wf02-n4', label: 'Validate Refund',   type: 'validate'   },
+      { id: 'wf02-n5', label: 'RAG Policy Search', type: 'policy'     },
+      { id: 'wf02-n6', label: 'Risk Assessment',   type: 'risk'       },
+      { id: 'wf02-n7', label: 'Generate Response', type: 'generate'   },
+    ],
+  },
+  {
+    id: 'wf03',
+    name: 'WF03 · Proactive',
+    description: 'Event-driven shipment delay alerts (no LLM routing — event-triggered)',
+    color: '#f08898',
+    nodes: [
+      { id: 'wf03-n1', label: 'Event Ingestion',   type: 'ingest'   },
+      { id: 'wf03-n2', label: 'Risk Assessment',   type: 'risk'     },
+      { id: 'wf03-n3', label: 'Send Alert',        type: 'alert'    },
+    ],
+  },
+]
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function uid() {
+  return `n-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+}
+
+function wfUid() {
+  return `wf-${Date.now().toString(36)}`
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+const WF_LABEL: Record<string, string> = {
+  workflow_01_track_shipment: 'WF01 · Tracking',
+  workflow_02_refund:         'WF02 · Refund',
+  workflow_03_proactive:      'WF03 · Proactive',
+}
+
+const WF_COLOR: Record<string, string> = {
+  workflow_01_track_shipment: '#89b4f7',
+  workflow_02_refund:         '#f5a878',
+  workflow_03_proactive:      '#f08898',
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  success:   '#76c9a0',
+  failed:    '#f09090',
+  completed: '#89b4f7',
+  fallback:  '#f0c870',
+  partial:   '#f0c870',
+}
+
+const TOOL_COLOR: Record<string, string> = {
+  detect_intent:       '#b8a0e8',
+  get_shipments:       '#76c9a0',
+  validate_refund:     '#f0c870',
+  search_policy:       '#b8a0e8',
+  assess_risk:         '#f09090',
+  generate_response:   '#f5a878',
+  send_alert:          '#f0d878',
+  ingest_event:        '#a8b8cc',
+  process_cancellation:'#89b4f7',
+}
+
+function RunCard({ run, expanded, onToggle }: { run: RecentRun; expanded: boolean; onToggle: () => void }) {
+  const wfLabel = WF_LABEL[run.workflow_name] ?? run.workflow_name
+  const wfColor = WF_COLOR[run.workflow_name] ?? '#94a3b8'
+  const stColor = STATUS_COLOR[run.status] ?? '#94a3b8'
+  const ts = run.started_at ? new Date(run.started_at).toLocaleString('th-TH', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' }) : '—'
+
   return (
-    <div className="ai-control-workspace">
-      <div className="ai-control-workspace__header">
-        <SectionHeader
-          num="1"
-          title="Multi-Agent Workspace"
-          subtitle="ออกแบบและจัดการ Multi-Agent"
-          caption="สร้าง, แก้ไข และจัดการ Agent, ความสามารถ, เครื่องมือ และ Flow การทำงาน"
-        />
+    <div className="ws-run-card" style={{ borderLeftColor: wfColor }}>
+      <button type="button" className="ws-run-card__head" onClick={onToggle}>
+        <div className="ws-run-card__meta">
+          <span className="ws-run-badge" style={{ background: `${wfColor}22`, color: wfColor }}>{wfLabel}</span>
+          <span className="ws-run-intent">{run.intent}</span>
+          {run.confidence != null && (
+            <span className="ws-run-conf">{Math.round(run.confidence * 100)}%</span>
+          )}
+        </div>
+        <div className="ws-run-card__right">
+          {run.requires_human_approval && (
+            <span className="ws-run-human" title="Requires human approval">Human Review</span>
+          )}
+          <span className="ws-run-status" style={{ color: stColor }}>● {run.status}</span>
+          {run.duration_ms != null && (
+            <span className="ws-run-dur">{run.duration_ms < 1000 ? `${run.duration_ms}ms` : `${(run.duration_ms / 1000).toFixed(1)}s`}</span>
+          )}
+          <span className="ws-run-ts">{ts}</span>
+          <span className="ws-run-chevron">{expanded ? '▲' : '▼'}</span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="ws-run-tools">
+          <div className="ws-run-tools__label">Tools called automatically by agent:</div>
+          <div className="ws-run-flow">
+            {run.tools.length === 0 && <span className="ws-run-tools__empty">No tool logs recorded</span>}
+            {run.tools.map((t, i) => {
+              const tc = TOOL_COLOR[t.tool] ?? '#94a3b8'
+              return (
+                <div key={i} className="ws-run-flow__item">
+                  {i > 0 && <span className="ws-run-flow__arrow">→</span>}
+                  <div className="ws-run-tool" style={{ borderTopColor: tc }}>
+                    <span className="ws-run-tool__name" style={{ color: tc }}>{t.tool}</span>
+                    <span className="ws-run-tool__agent">{t.agent}</span>
+                    <span className="ws-run-tool__lat" style={{ color: t.status === 'failed' ? '#ef4444' : '#94a3b8' }}>
+                      {t.status === 'failed' ? 'failed' : t.latency_ms != null ? `${t.latency_ms}ms` : '—'}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="ws-run-tid">trace: {run.trace_id}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export function WorkspaceTab() {
+  const [workflows, setWorkflows] = useState<Workflow[]>(INITIAL_WORKFLOWS)
+  const [selectedId, setSelectedId] = useState<string>('wf01')
+  const [showPalette, setShowPalette] = useState(false)
+  const [showAddWf, setShowAddWf] = useState(false)
+  const [newWfName, setNewWfName] = useState('')
+  const [newWfDesc, setNewWfDesc] = useState('')
+
+  const [testShipmentId, setTestShipmentId] = useState('')
+  const [testResult, setTestResult] = useState<string | null>(null)
+  const [testLoading, setTestLoading] = useState(false)
+  const [testError, setTestError] = useState<string | null>(null)
+
+  // ── Live runs ──────────────────────────────────────────────────────────────
+  const [runs, setRuns] = useState<RecentRun[]>([])
+  const [runsLoading, setRunsLoading] = useState(true)
+  const [expandedRun, setExpandedRun] = useState<string | null>(null)
+  const [filterWf, setFilterWf] = useState<string>('all')
+
+  useEffect(() => {
+    setRunsLoading(true)
+    api.getRecentRuns(20)
+      .then(data => { setRuns(data); if (data.length > 0) setExpandedRun(data[0].trace_id) })
+      .catch(() => {})
+      .finally(() => setRunsLoading(false))
+  }, [])
+
+  const filteredRuns = filterWf === 'all' ? runs : runs.filter(r => r.workflow_name === filterWf)
+
+  const selectedWf = workflows.find(w => w.id === selectedId) ?? workflows[0]
+
+  // ── Workflow CRUD ──────────────────────────────────────────────────────────
+
+  function handleAddWorkflow() {
+    const name = newWfName.trim()
+    if (!name) return
+    const colorIdx = workflows.length % WF_COLORS.length
+    const wf: Workflow = {
+      id: wfUid(),
+      name,
+      description: newWfDesc.trim() || 'Custom workflow',
+      color: WF_COLORS[colorIdx],
+      nodes: [],
+    }
+    setWorkflows(ws => [...ws, wf])
+    setSelectedId(wf.id)
+    setNewWfName('')
+    setNewWfDesc('')
+    setShowAddWf(false)
+    setShowPalette(false)
+  }
+
+  function handleRemoveWorkflow(id: string) {
+    if (!confirm('Remove this workflow from the workspace? This does not affect the running backend.')) return
+    const remaining = workflows.filter(w => w.id !== id)
+    setWorkflows(remaining)
+    if (selectedId === id) setSelectedId(remaining[0]?.id ?? '')
+    setShowPalette(false)
+  }
+
+  // ── Node CRUD ──────────────────────────────────────────────────────────────
+
+  function handleAddNode(template: { label: string; type: NodeType }) {
+    setWorkflows(ws =>
+      ws.map(w =>
+        w.id !== selectedId ? w : { ...w, nodes: [...w.nodes, { id: uid(), label: template.label, type: template.type }] }
+      )
+    )
+    setShowPalette(false)
+  }
+
+  function handleRemoveNode(nodeId: string) {
+    setWorkflows(ws =>
+      ws.map(w =>
+        w.id !== selectedId ? w : { ...w, nodes: w.nodes.filter(n => n.id !== nodeId) }
+      )
+    )
+  }
+
+  // ── Test flow ──────────────────────────────────────────────────────────────
+
+  async function handleTestFlow() {
+    setTestLoading(true)
+    setTestResult(null)
+    setTestError(null)
+    try {
+      const res = await api.triggerProactiveDelay(testShipmentId)
+      setTestResult(
+        JSON.stringify({ workflow: res.workflow_name, alert_id: res.state_snapshot?.alert_id, response: res.response_text }, null, 2)
+      )
+      // Refresh runs after test
+      const data = await api.getRecentRuns(20)
+      setRuns(data)
+      if (data.length > 0) setExpandedRun(data[0].trace_id)
+    } catch (err) {
+      setTestError(err instanceof Error ? err.message : 'Trigger failed')
+    } finally {
+      setTestLoading(false)
+    }
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="ws-shell">
+
+      {/* Workflow list sidebar */}
+      <div className="ws-sidebar">
+        <div className="ws-sidebar__head">Workflows</div>
+
+        {workflows.map(wf => (
+          <button
+            key={wf.id}
+            type="button"
+            className={`ws-wf-item${selectedId === wf.id ? ' is-active' : ''}`}
+            onClick={() => { setSelectedId(wf.id); setShowPalette(false) }}
+          >
+            <span className="ws-wf-dot" style={{ background: wf.color }} />
+            <span className="ws-wf-name">{wf.name}</span>
+            <span className="ws-wf-badge">{wf.nodes.length}</span>
+          </button>
+        ))}
+
+        {showAddWf ? (
+          <div className="ws-add-wf-form">
+            <input
+              className="ws-add-wf-input"
+              value={newWfName}
+              onChange={e => setNewWfName(e.target.value)}
+              placeholder="WF04 · Escalation"
+              onKeyDown={e => e.key === 'Enter' && handleAddWorkflow()}
+              autoFocus
+            />
+            <input
+              className="ws-add-wf-input"
+              value={newWfDesc}
+              onChange={e => setNewWfDesc(e.target.value)}
+              placeholder="Description (optional)"
+              onKeyDown={e => e.key === 'Enter' && handleAddWorkflow()}
+            />
+            <div className="ws-add-wf-btns">
+              <button type="button" className="ws-add-wf-confirm" onClick={handleAddWorkflow}>Add</button>
+              <button type="button" className="ws-add-wf-cancel" onClick={() => { setShowAddWf(false); setNewWfName(''); setNewWfDesc('') }}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="ws-add-wf-btn" onClick={() => setShowAddWf(true)}>
+            + Add Workflow
+          </button>
+        )}
+
+        <p className="ws-sidebar__note">
+          Agent เลือก tool เองอัตโนมัติผ่าน LangGraph — Workspace นี้แสดง tool calls จริงจากทุก run
+        </p>
       </div>
 
-      <div className="ai-workspace-grid">
-        <div className="ai-agent-list-panel ai-control-surface ai-control-surface--inner">
-          <strong className="ai-panel-label">Agents</strong>
-          {AGENTS.map((agent) => (
-            <div key={agent.name} className="ai-agent-item">
-              <span className="ai-agent-dot" style={{ background: agent.color }} />
-              {agent.name}
-            </div>
-          ))}
-          <button type="button" className="ai-link-button">+ Add Agent</button>
-        </div>
+      {/* Main area — split: diagram top, live runs bottom */}
+      <div className="ws-main">
 
-        <div className="ai-flow-panel ai-control-surface ai-control-surface--inner">
-          <div className="ai-flow-topbar">
-            <div className="ai-flow-label">Agent Flow (LangGraph)</div>
-            <div className="ai-flow-controls">
-              <div className="ai-zoom-group">
-                <button type="button">-</button>
-                <span>100%</span>
-                <button type="button">+</button>
-              </div>
-              <button type="button" className="ai-icon-button" aria-label="Expand">
-                <SvgIcon path={<path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />} />
-              </button>
-              <button type="button" className="ai-secondary-button ai-secondary-button--compact">Edit Flow</button>
+        {/* ── Flow canvas ───────────────────────────────────────────── */}
+        <div className="ws-canvas">
+
+          {/* Header */}
+          <div className="ws-canvas__head">
+            <div className="ws-canvas__head-left">
+              <span className="ws-canvas__name" style={{ borderLeftColor: selectedWf.color }}>
+                {selectedWf.name}
+              </span>
+              <span className="ws-canvas__desc">{selectedWf.description}</span>
             </div>
+            {workflows.length > 1 && (
+              <button type="button" className="ws-del-wf-btn" onClick={() => handleRemoveWorkflow(selectedId)}>
+                Remove Workflow
+              </button>
+            )}
           </div>
 
-          <svg viewBox="0 0 840 440" className="ai-flow-svg">
-            <defs>
-              <marker id="arr" markerWidth="12" markerHeight="12" refX="6" refY="6" orient="auto">
-                <path d="M0,0 L0,12 L12,6 z" fill="#9ca3af" />
-              </marker>
-            </defs>
-            <line x1="180" y1="90" x2="260" y2="90" stroke="#aeb8c8" strokeWidth="3" markerEnd="url(#arr)" />
-            <rect x="60" y="60" width="120" height="56" rx="12" fill="#f7fbff" stroke="#5a8dff" strokeWidth="2.8" />
-            <text x="120" y="95" textAnchor="middle" fontSize="17.2" fontWeight="600" fill="#183153">Router</text>
-            <rect x="260" y="60" width="148" height="56" rx="12" fill="#f0fff8" stroke="#54d1a4" strokeWidth="2.8" />
-            <text x="334" y="95" textAnchor="middle" fontSize="16.8" fontWeight="600" fill="#183153">Order Agent</text>
-            <line x1="408" y1="90" x2="480" y2="90" stroke="#aeb8c8" strokeWidth="3" markerEnd="url(#arr)" />
-            <rect x="480" y="60" width="164" height="56" rx="12" fill="#fffaf0" stroke="#f0b847" strokeWidth="2.8" />
-            <text x="562" y="95" textAnchor="middle" fontSize="16.4" fontWeight="600" fill="#183153">Shipping Agent</text>
+          {/* Flow nodes */}
+          <div className="ws-flow-wrap">
+            {selectedWf.nodes.length === 0 && (
+              <p className="ws-flow-empty">No nodes yet. Click "+ Add Node" to build this workflow.</p>
+            )}
+            {selectedWf.nodes.length > 0 && (
+              <div className="ws-flow">
+                {selectedWf.nodes.map((node, i) => (
+                  <div key={node.id} className="ws-flow__item">
+                    {i > 0 && <span className="ws-arrow" aria-hidden>&#8594;</span>}
+                    <div
+                      className="ws-node"
+                      style={{ borderTopColor: NODE_STYLE[node.type].color, background: NODE_STYLE[node.type].bg }}
+                    >
+                      <button
+                        type="button"
+                        className="ws-node__del"
+                        onClick={() => handleRemoveNode(node.id)}
+                        title="Remove node"
+                      >
+                        &times;
+                      </button>
+                      <span className="ws-node__label">{node.label}</span>
+                      <span className="ws-node__type" style={{ color: NODE_STYLE[node.type].color }}>
+                        {node.type}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
-            <line x1="120" y1="116" x2="120" y2="216" stroke="#aeb8c8" strokeWidth="3" />
-            <line x1="120" y1="216" x2="260" y2="216" stroke="#aeb8c8" strokeWidth="3" markerEnd="url(#arr)" />
-            <rect x="260" y="188" width="148" height="56" rx="12" fill="#fff5fb" stroke="#ff7bc7" strokeWidth="2.8" />
-            <text x="334" y="223" textAnchor="middle" fontSize="16.8" fontWeight="600" fill="#183153">Policy Agent</text>
-            <line x1="408" y1="216" x2="480" y2="216" stroke="#aeb8c8" strokeWidth="3" markerEnd="url(#arr)" />
-            <rect x="480" y="188" width="164" height="56" rx="12" fill="#fff4fb" stroke="#ff68c0" strokeWidth="2.8" />
-            <text x="562" y="223" textAnchor="middle" fontSize="16.4" fontWeight="600" fill="#183153">Refund Agent</text>
-
-            <rect x="60" y="316" width="120" height="56" rx="12" fill="#fff7f7" stroke="#ff6a60" strokeWidth="2.8" />
-            <text x="120" y="351" textAnchor="middle" fontSize="16.8" fontWeight="600" fill="#183153">Risk Agent</text>
-            <line x1="180" y1="344" x2="260" y2="344" stroke="#aeb8c8" strokeWidth="3" markerEnd="url(#arr)" />
-            <rect x="260" y="316" width="148" height="56" rx="12" fill="#fff7ef" stroke="#ff9a46" strokeWidth="2.8" />
-            <text x="334" y="351" textAnchor="middle" fontSize="15.8" fontWeight="600" fill="#183153">Supervisor Agent</text>
-            <line x1="408" y1="344" x2="480" y2="344" stroke="#aeb8c8" strokeWidth="3" markerEnd="url(#arr)" />
-            <rect x="480" y="316" width="164" height="56" rx="12" fill="#f0fffd" stroke="#59d6ce" strokeWidth="2.8" />
-            <text x="562" y="351" textAnchor="middle" fontSize="16.4" fontWeight="600" fill="#183153">Support Agent</text>
-          </svg>
-
-          <div className="ai-flow-actions">
-            <button type="button" className="ai-link-chip">
-              <SvgIcon path={<path d="M8 5v14l11-7z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />} />
-              Test Flow
+            <button
+              type="button"
+              className={`ws-add-node-btn${showPalette ? ' is-active' : ''}`}
+              onClick={() => setShowPalette(v => !v)}
+            >
+              {showPalette ? '− Close' : '+ Add Node'}
             </button>
           </div>
+
+          {/* Node palette */}
+          {showPalette && (
+            <div className="ws-palette">
+              <div className="ws-palette__head">Select a node type to append to the workflow</div>
+              <div className="ws-palette__grid">
+                {NODE_PALETTE.map(n => (
+                  <button
+                    key={n.label}
+                    type="button"
+                    className="ws-palette-node"
+                    style={{ borderColor: `${NODE_STYLE[n.type].color}55` }}
+                    onClick={() => handleAddNode(n)}
+                  >
+                    <span className="ws-palette-node__dot" style={{ background: NODE_STYLE[n.type].color }} />
+                    <span style={{ color: NODE_STYLE[n.type].color, fontWeight: 700 }}>{n.label}</span>
+                    <span className="ws-palette-node__type">{n.note ?? n.type}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Test panel */}
+          <div className="ws-test">
+            <div className="ws-test__head">
+              <span className="ws-test__title">Manual Test · WF03 Proactive</span>
+              <span className="ws-test__sub">ยิง event จริงผ่าน LangGraph pipeline — agent เลือก tool เอง</span>
+            </div>
+            <div className="ws-test__bar">
+              <input
+                className="ws-test__input"
+                value={testShipmentId}
+                onChange={e => setTestShipmentId(e.target.value)}
+                placeholder="Shipment ID เช่น SHP-9002"
+              />
+              <button
+                type="button"
+                className="ws-test__run"
+                onClick={() => void handleTestFlow()}
+                disabled={testLoading || !testShipmentId.trim()}
+              >
+                {testLoading ? 'Running...' : '▶ Run'}
+              </button>
+            </div>
+            {testError && <p className="ws-test__error">{testError}</p>}
+            {testResult && <pre className="ws-test__result">{testResult}</pre>}
+          </div>
         </div>
+
+        {/* ── Live Agent Runs ──────────────────────────────────────── */}
+        <div className="ws-runs">
+          <div className="ws-runs__head">
+            <div className="ws-runs__title">
+              Live Agent Runs
+              <span className="ws-runs__sub">— tool calls ที่ agent เลือกเองอัตโนมัติ</span>
+            </div>
+            <div className="ws-runs__filters">
+              {(['all', 'workflow_01_track_shipment', 'workflow_02_refund', 'workflow_03_proactive'] as const).map(wf => (
+                <button
+                  key={wf}
+                  type="button"
+                  className={`ws-runs__filter${filterWf === wf ? ' is-active' : ''}`}
+                  onClick={() => setFilterWf(wf)}
+                >
+                  {wf === 'all' ? 'All' : WF_LABEL[wf]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="ws-runs__list">
+            {runsLoading && <p className="ws-runs__loading">Loading runs...</p>}
+            {!runsLoading && filteredRuns.length === 0 && (
+              <p className="ws-runs__empty">No runs found.</p>
+            )}
+            {filteredRuns.map(run => (
+              <RunCard
+                key={run.trace_id}
+                run={run}
+                expanded={expandedRun === run.trace_id}
+                onToggle={() => setExpandedRun(v => v === run.trace_id ? null : run.trace_id)}
+              />
+            ))}
+          </div>
+        </div>
+
       </div>
     </div>
   )

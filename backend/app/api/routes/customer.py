@@ -13,10 +13,12 @@ from app.repositories.business import (
     get_shipment,
     list_customer_conversations,
     list_customer_orders,
+    list_customer_proactive_alerts,
     list_customer_refund_requests,
     list_customer_shipments,
     list_messages,
 )
+from app.schemas.admin import ProactiveAlertResponse
 from app.schemas.business import (
     AttachmentResponse,
     ConversationDetailResponse,
@@ -126,11 +128,11 @@ def read_order(order_id: str, db: Session = Depends(get_db)) -> OrderDetailRespo
     )
 
 
-@router.get("/customers/{customer_id}/shipments", response_model=list[ShipmentSummaryResponse])
-def read_customer_shipments(customer_id: str, db: Session = Depends(get_db)) -> list[ShipmentSummaryResponse]:
+@router.get("/customers/{customer_id}/shipments", response_model=list[ShipmentDetailResponse])
+def read_customer_shipments(customer_id: str, db: Session = Depends(get_db)) -> list[ShipmentDetailResponse]:
     shipments = list_customer_shipments(db, customer_id)
     return [
-        ShipmentSummaryResponse(
+        ShipmentDetailResponse(
             id=shipment.id,
             order_id=shipment.order_id,
             carrier=shipment.carrier,
@@ -141,6 +143,18 @@ def read_customer_shipments(customer_id: str, db: Session = Depends(get_db)) -> 
             delay_risk_score=shipment.delay_risk_score,
             created_at=shipment.created_at,
             updated_at=shipment.updated_at,
+            events=[
+                ShipmentEventResponse(
+                    id=event.id,
+                    event_type=event.event_type,
+                    event_message=event.event_message,
+                    location=event.location,
+                    event_time=event.event_time,
+                    raw_payload=event.raw_payload,
+                    created_at=event.created_at,
+                )
+                for event in sorted(shipment.events, key=lambda e: (e.event_time or e.created_at or '', e.id))
+            ],
         )
         for shipment in shipments
     ]
@@ -238,6 +252,28 @@ def read_messages(conversation_id: str, db: Session = Depends(get_db)) -> list[M
             created_at=message.created_at,
         )
         for message in messages
+    ]
+
+
+@router.get("/customers/{customer_id}/proactive-alerts", response_model=list[ProactiveAlertResponse])
+def read_customer_proactive_alerts(customer_id: str, db: Session = Depends(get_db)) -> list[ProactiveAlertResponse]:
+    alerts = list_customer_proactive_alerts(db, customer_id)
+    return [
+        ProactiveAlertResponse(
+            id=item.id,
+            order_id=item.order_id,
+            shipment_id=item.shipment_id,
+            alert_type=item.alert_type,
+            risk_score=item.risk_score,
+            status=item.status,
+            recommended_action=item.recommended_action,
+            resolution_note=item.resolution_note,
+            message_draft=item.message_draft,
+            case_id=item.case_id,
+            created_at=item.created_at,
+            resolved_at=item.resolved_at,
+        )
+        for item in alerts
     ]
 
 

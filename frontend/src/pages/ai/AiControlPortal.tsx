@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
-import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
-import { PortalShell } from '../../components/PortalShell'
 import { Sidebar } from '../../components/Sidebar'
+import { readSession } from '../../lib/session'
 
 import { SvgIcon } from './components/SvgIcon'
 import { WorkspaceTab } from './tabs/WorkspaceTab'
@@ -89,46 +89,44 @@ const navItems: { key: AiTab; label: string; icon: ReactNode }[] = [
 ]
 
 export function AiControlPortal() {
-  const [activeTab, setActiveTab] = useState<AiTab>('workspace')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = (searchParams.get('tab') as AiTab) ?? 'workspace'
+  const setActiveTab = (tab: AiTab) => setSearchParams({ tab }, { replace: true })
+  const session = readSession()
+  const userName = session?.user?.name ?? 'AI Admin'
 
   return (
-    <PortalShell
-      badge="AI Control"
-      heading="AI Engineer / System Admin"
-      caption="ศูนย์ควบคุม traces, logs และความเชื่อมโยงกับเคสจริงในระบบ"
-      variant="ai-control"
-    >
-      <div className="ai-control-page">
-        <Sidebar
-          title="ShopEasy"
-          subtitle="AI Control"
-          accent="linear-gradient(135deg, #6d28d9, #4f46e5)"
-          items={navItems}
-          activeKey={activeTab}
-          onSelect={(key) => setActiveTab(key as AiTab)}
-        />
-
-        <div className="portal-main portal-main--ai-control">
-          <div className="ai-control-header">
-            <h2>{navItems.find((n) => n.key === activeTab)?.label}</h2>
-            <p>ศูนย์ควบคุม traces, logs และความเชื่อมโยงกับเคสจริงในระบบ</p>
+    <div className="ai-control-page">
+      <Sidebar
+        title="ShopEasy"
+        subtitle="AI Control"
+        accent="linear-gradient(135deg, #ff5d2e, #ff8744)"
+        items={navItems}
+        activeKey={activeTab}
+        onSelect={(key) => setActiveTab(key as AiTab)}
+        className="sidebar--ai-control"
+        footer={
+          <div className="sidebar-profile">
+            <strong>{userName}</strong>
+            <span>{session?.user?.email ?? 'ai_admin'}</span>
           </div>
+        }
+      />
 
+      <div className="ai-portal-main">
+        <div className="ai-portal-topbar">
+          <span className="ai-portal-topbar__title">
+            {navItems.find((n) => n.key === activeTab)?.label}
+          </span>
+        </div>
+        <div className="ai-portal-content">
           {activeTab === 'workspace' && <WorkspaceTab />}
           {activeTab === 'traces' && <TracesTab />}
           {activeTab === 'rag' && <RagTab />}
           {activeTab === 'evaluation' && <EvaluationTab />}
           {activeTab === 'analytics' && <AnalyticsTab />}
-
-          <div className="ai-control-footer">
-            <span>© 2024 AI Control. All rights reserved.</span>
-            <div className="ai-control-footer__links">
-              <button type="button">Privacy Policy</button>
-              <button type="button">Terms of Service</button>
-            </div>
-          </div>
         </div>
       </div>
-    </PortalShell>
+    </div>
   )
 }

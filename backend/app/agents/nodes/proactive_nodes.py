@@ -9,13 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.agents.state import TrackingWorkflowState
 from app.agents.tools.proactive import (
+    build_carrier_notification,
     build_proactive_message,
     calculate_delay_risk,
     detect_proactive_event,
     is_stale_update,
     select_proactive_policy_titles,
 )
-from app.db.models import Approval, Case, ProactiveAlert
+from app.db.models import Approval, Case, ProactiveAlert, ShipmentEvent
 from app.repositories.proactive import ProactiveContext, get_proactive_context
 
 
@@ -60,18 +61,29 @@ def proactive_shipping_node(state: TrackingWorkflowState, context: ProactiveCont
     return state, stale, risk_score
 
 
-def proactive_policy_rag_node(state: TrackingWorkflowState, context: ProactiveContext) -> TrackingWorkflowState:
+def proactive_policy_rag_node(state: TrackingWorkflowState, context: ProactiveContext, db: Session) -> TrackingWorkflowState:
+    from app.services.policy_rag import search_policy_hybrid
+
+    # Search for delay / shipping policy chunks (hybrid: vector + keyword)
+    query = "shipment delay compensation proactive notification"
+    results = search_policy_hybrid(db, query=query, limit=3)
+
+    state.policy_chunks = [r["chunk_text"] for r in results]
+    state.policy_titles = [r["policy_title"] for r in results] or select_proactive_policy_titles(context.policies)
+
     state.tool_logs.append(
         {
             "node": "policy_rag_node",
-            "tool": "select_proactive_policy_titles",
-            "policies": select_proactive_policy_titles(context.policies),
+            "tool": "search_policy_chunks",
+            "query": query,
+            "results_count": len(results),
         }
     )
     return state
 
 
 def proactive_alert_node(db: Session, state: TrackingWorkflowState, context: ProactiveContext, risk_score: int) -> tuple[TrackingWorkflowState, ProactiveAlert]:
+    fresh_message = build_proactive_message(context.shipment.order_id, context.shipment.id, risk_score)
     alert = db.get(ProactiveAlert, "ALT-1001")
     if alert is None:
         alert = ProactiveAlert(
@@ -82,23 +94,55 @@ def proactive_alert_node(db: Session, state: TrackingWorkflowState, context: Pro
             risk_score=risk_score,
             status="open",
             recommended_action="Notify customer and monitor shipment",
-            message_draft=build_proactive_message(context.shipment.order_id, context.shipment.id, risk_score),
+            message_draft=fresh_message,
             case_id=None,
             created_at=datetime.utcnow(),
             resolved_at=None,
         )
         db.add(alert)
-        db.flush()
+    else:
+        alert.message_draft = fresh_message
+        alert.risk_score = risk_score
+    db.flush()
     state.response_text = alert.message_draft
     state.tool_logs.append({"node": "proactive_alert_node", "tool": "create_or_load_proactive_alert", "alert_id": alert.id})
     return state, alert
 
 
 def proactive_supervisor_node(state: TrackingWorkflowState, risk_score: int) -> TrackingWorkflowState:
-    requires_approval = risk_score >= 80
+    """Full supervisor evaluation for proactive alerts."""
+    from app.agents.inter_agent import MessageBus
+    from app.agents.supervisor_agent import SupervisorAgent
+
+    supervisor = SupervisorAgent()
+    result = supervisor.supervise(
+        intent="proactive_delay_alert",
+        customer_message="system_event",
+        response=state.response_text or "pending",
+        risk_score=risk_score,
+        tools_used=[log.get("tool", "") for log in state.tool_logs],
+    )
+
+    requires_approval = result.requires_human or risk_score >= 80
+
     if requires_approval:
         state.fallback_reason = "requires_human_approval"
-    state.tool_logs.append({"node": "supervisor_node", "tool": "evaluate_proactive_escalation", "requires_approval": requires_approval})
+        bus = MessageBus.get_instance()
+        bus.escalate(
+            source="proactive_workflow",
+            context={"customer_id": state.customer_id, "shipment_ids": state.active_shipment_ids,
+                      "quality_score": result.quality_score},
+            reason=result.reason or f"High risk delay (score={risk_score})",
+            risk_score=risk_score,
+        )
+
+    state.tool_logs.append({
+        "node": "supervisor_node",
+        "tool": "full_supervisor_evaluation",
+        "requires_approval": requires_approval,
+        "quality_score": result.quality_score,
+        "issues": result.issues,
+    })
     return state
 
 
@@ -182,9 +226,125 @@ def proactive_approval_node(db: Session, state: TrackingWorkflowState, case: Cas
     return state
 
 
-def proactive_memory_write_node(state: TrackingWorkflowState, case: Case, alert: ProactiveAlert) -> TrackingWorkflowState:
+def proactive_memory_write_node(db: Session, state: TrackingWorkflowState, case: Case, alert: ProactiveAlert) -> TrackingWorkflowState:
+    """Persist memory after proactive alert across all 3 layers."""
+    import logging
+
+    from app.agents.memory.episodic import EpisodicMemory
+    from app.agents.memory.long_term import LongTermMemory
+
+    logger = logging.getLogger(__name__)
+    customer_id = state.customer_id
+
+    # Long-term: record delay pattern
+    if customer_id and customer_id != "SYSTEM":
+        try:
+            ltm = LongTermMemory(db=db, customer_id=customer_id)
+            ltm.save(
+                memory_type="pattern",
+                key="last_delay_alert",
+                value={"alert_id": alert.id, "case_id": case.id, "risk_score": alert.risk_score},
+                source_agent="proactive_workflow",
+            )
+        except Exception as e:
+            logger.debug("Long-term write error: %s", e)
+
+    # Episodic: record escalation event
+    if customer_id and customer_id != "SYSTEM":
+        try:
+            em = EpisodicMemory(db=db, customer_id=customer_id)
+            em.store(
+                event_type="escalation",
+                summary=f"Proactive delay alert {alert.id} for case {case.id}, risk={alert.risk_score}",
+                metadata={"alert_id": alert.id, "case_id": case.id, "risk_score": alert.risk_score},
+            )
+        except Exception as e:
+            logger.debug("Episodic write error: %s", e)
+
     state.memory_summary = f"Proactive alert {alert.id} created and linked to case {case.id}."
-    state.tool_logs.append({"node": "memory_write_node", "tool": "write_proactive_memory"})
+    state.tool_logs.append({"node": "memory_write_node", "tool": "persist_3layer_proactive_memory"})
+    return state
+
+
+def proactive_carrier_notify_node(
+    db: Session, state: TrackingWorkflowState, context: ProactiveContext, alert: ProactiveAlert
+) -> TrackingWorkflowState:
+    """Simulate notifying the carrier about a stale shipment. Writes a ShipmentEvent record."""
+    shipment = context.shipment
+    message = build_carrier_notification(
+        shipment_id=shipment.id,
+        tracking_no=shipment.tracking_no,
+        carrier=shipment.carrier,
+        order_id=shipment.order_id,
+    )
+    event = ShipmentEvent(
+        id=_new_prefixed_id("EVT"),
+        shipment_id=shipment.id,
+        event_type="carrier_contacted",
+        event_message=message,
+        location="system",
+        event_time=datetime.utcnow(),
+        raw_payload={
+            "source": "workflow_03_proactive_delay_alert",
+            "alert_id": alert.id,
+            "carrier": shipment.carrier,
+            "tracking_no": shipment.tracking_no,
+            "method": "simulated_api_call",
+        },
+        created_at=datetime.utcnow(),
+    )
+    db.add(event)
+    db.flush()
+    state.tool_logs.append({
+        "node": "carrier_notify_node",
+        "tool": "notify_carrier",
+        "shipment_id": shipment.id,
+        "carrier": shipment.carrier or "unknown",
+        "tracking_no": shipment.tracking_no or "unknown",
+        "event_id": event.id,
+        "message_preview": message[:120],
+    })
+    return state
+
+
+def proactive_carrier_notify_node(
+    db: Session, state: TrackingWorkflowState, context: ProactiveContext, alert: ProactiveAlert
+) -> TrackingWorkflowState:
+    """Simulate notifying the carrier about a stale shipment. Writes a ShipmentEvent record."""
+    shipment = context.shipment
+    message = build_carrier_notification(
+        shipment_id=shipment.id,
+        tracking_no=shipment.tracking_no,
+        carrier=shipment.carrier,
+        order_id=shipment.order_id,
+    )
+    event = ShipmentEvent(
+        id=_new_prefixed_id("EVT"),
+        shipment_id=shipment.id,
+        event_type="carrier_contacted",
+        event_message=message,
+        location="system",
+        event_time=datetime.utcnow(),
+        raw_payload={
+            "source": "workflow_03_proactive_delay_alert",
+            "alert_id": alert.id,
+            "carrier": shipment.carrier,
+            "tracking_no": shipment.tracking_no,
+            "method": "simulated_api_call",
+        },
+        created_at=datetime.utcnow(),
+    )
+    db.add(event)
+    db.flush()
+    state.tool_logs.append({
+        "node": "carrier_notify_node",
+        "tool": "notify_carrier",
+        "shipment_id": shipment.id,
+        "carrier": shipment.carrier or "unknown",
+        "tracking_no": shipment.tracking_no or "unknown",
+        "event_id": event.id,
+        "message_preview": message[:120],
+    })
     return state
 
 

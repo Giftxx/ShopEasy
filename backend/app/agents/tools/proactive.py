@@ -32,3 +32,14 @@ def build_proactive_message(order_id: str, shipment_id: str, risk_score: int) ->
         f"เราแจ้งเตือนล่วงหน้าสำหรับออเดอร์ {order_id} แล้วค่ะ "
         f"เนื่องจากพัสดุ {shipment_id} ไม่มีการอัปเดตเกิน 48 ชั่วโมง และถูกจัดเป็นความเสี่ยงระดับ {risk_score}/100"
     )
+
+
+def build_carrier_notification(shipment_id: str, tracking_no: str | None, carrier: str | None, order_id: str) -> str:
+    carrier_name = carrier or "ผู้ให้บริการขนส่ง"
+    tracking = tracking_no or "ไม่ระบุ"
+    return (
+        f"[ระบบอัตโนมัติ] แจ้ง {carrier_name}: "
+        f"พัสดุหมายเลข {tracking} (shipment {shipment_id}) ของออเดอร์ {order_id} "
+        f"ไม่มีการอัปเดตสถานะเกิน 48 ชั่วโมง "
+        f"กรุณาตรวจสอบและอัปเดตสถานะการจัดส่งโดยด่วน"
+    )

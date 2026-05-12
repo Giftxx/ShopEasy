@@ -1,11 +1,21 @@
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+try:
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token as google_id_token
+    _GOOGLE_AUTH_AVAILABLE = True
+except ImportError:
+    _GOOGLE_AUTH_AVAILABLE = False
+
 from app.api.deps import get_current_user, get_db
+from app.core.config import get_settings
 from app.core.security import create_access_token, verify_password
-from app.db.models import User
+from app.db.models import Customer, User
 from app.repositories.business import get_user_by_email, get_user_by_username
-from app.schemas.auth import LoginRequest, LoginResponse, MockLoginRequest, MockLoginResponse
+from app.schemas.auth import GoogleLoginRequest, LoginRequest, LoginResponse, MockLoginRequest, MockLoginResponse
 from app.schemas.business import UserResponse
 
 router = APIRouter()
@@ -46,6 +56,62 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if user.status != "active":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive")
+
+    access_token, customer_id = _build_token(user)
+    return LoginResponse(
+        user=UserResponse.from_orm(user),
+        access_token=access_token,
+        customer_id=customer_id,
+    )
+
+
+@router.post("/google", response_model=LoginResponse)
+def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
+    if not _GOOGLE_AUTH_AVAILABLE:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="google-auth package is not installed on this server.")
+    settings = get_settings()
+    if not settings.google_client_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Google login is not configured on this server.")
+
+    try:
+        idinfo = google_id_token.verify_oauth2_token(  # type: ignore[union-attr]
+            payload.credential,
+            google_requests.Request(),  # type: ignore[union-attr]
+            settings.google_client_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token.") from exc
+
+    email: str = idinfo["email"]
+    name: str = idinfo.get("name", email.split("@")[0])
+
+    user = get_user_by_email(db, email=email)
+
+    if user is None:
+        user_id = str(uuid4())
+        user = User(
+            id=user_id,
+            name=name,
+            email=email,
+            role="customer",
+            status="active",
+            hashed_password=None,
+        )
+        db.add(user)
+        db.flush()
+
+        customer = Customer(
+            id=f"CUST-{uuid4().hex[:8].upper()}",
+            user_id=user.id,
+            name=name,
+            email=email,
+        )
+        db.add(customer)
+        db.commit()
+        db.refresh(user)
+
+    if user.status != "active":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive.")
 
     access_token, customer_id = _build_token(user)
     return LoginResponse(

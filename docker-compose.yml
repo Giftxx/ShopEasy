@@ -34,7 +34,13 @@ services:
       MINIO_SECRET_KEY: minio-root-password
       MINIO_BUCKET_NAME: evidence
       MINIO_USE_SSL: "False"
+      MINIO_PUBLIC_ENDPOINT: "localhost:9000"
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       SECRET_KEY: "shopeasy-docker-dev-secret-key-2026"
+      GOOGLE_CLIENT_ID: ""
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      OLLAMA_MODEL: "qwen2.5:1.5b"
     ports:
       - "8000:8000"
     depends_on:
@@ -96,8 +102,25 @@ services:
       /usr/bin/mc config host add myminio http://minio:9000 minio-root-user minio-root-password;
       /usr/bin/mc mb myminio/evidence --ignore-existing;
       /usr/bin/mc policy set public myminio/evidence;
+      /usr/bin/mc anonymous set public myminio/evidence;
+      echo '[{\"AllowedHeaders\":[\"*\"],\"AllowedMethods\":[\"GET\",\"PUT\",\"POST\",\"DELETE\",\"HEAD\"],\"AllowedOrigins\":[\"http://localhost:5173\",\"http://127.0.0.1:5173\",\"*\"],\"ExposeHeaders\":[\"ETag\",\"x-amz-request-id\"]}]' > /tmp/cors.json;
+      /usr/bin/mc cors set myminio/evidence /tmp/cors.json || true;
       exit 0;
       "
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: shopeasy-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   frontend:
     build:
@@ -121,3 +144,4 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  qdrant_data:
