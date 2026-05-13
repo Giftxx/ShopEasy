@@ -40,7 +40,6 @@ services:
       GOOGLE_CLIENT_ID: ""
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
-      OLLAMA_MODEL: "qwen2.5:1.5b"
     ports:
       - "8000:8000"
     depends_on:
@@ -145,3 +144,4 @@ volumes:
   redis_data:
   minio_data:
   qdrant_data:
+  ollama_data:
