@@ -381,10 +381,22 @@ def fallback_node(db: Session, state: GraphState) -> GraphState:
     if llm_response:
         state["customer_response"] = llm_response
     else:
-        state["customer_response"] = (
-            "ขออภัยค่ะ สามารถช่วยเรื่องการติดตามพัสดุหรือการคืนเงินได้เลยค่ะ "
-            "กรุณาระบุเลขออเดอร์หรืออธิบายปัญหาเพิ่มเติมได้ค่ะ"
-        )
+        # Template fallback with customer data when LLM is unavailable
+        customer_name = customer.get("name", "") if isinstance(customer, dict) else ""
+        if customer_name:
+            fallback = (
+                f"สวัสดีค่ะ คุณ{customer_name} 🙏 "
+                f"ขออภัยที่ระบบไม่สามารถประมวลผลคำถามได้ในขณะนี้ "
+                f"สามารถช่วยเรื่องการติดตามพัสดุหรือการคืนเงินได้เลยค่ะ "
+                f"กรุณาระบุเลขออเดอร์หรืออธิบายปัญหาเพิ่มเติมได้ค่ะ"
+            )
+        else:
+            fallback = (
+                "ขออภัยค่ะ ระบบไม่สามารถประมวลผลคำถามได้ในขณะนี้ "
+                "สามารถช่วยเรื่องการติดตามพัสดุหรือการคืนเงินได้เลยค่ะ "
+                "กรุณาระบุเลขออเดอร์หรืออธิบายปัญหาเพิ่มเติมได้ค่ะ"
+            )
+        state["customer_response"] = fallback
 
     _add_tool_call(state, "fallback_node", "call_llm_general_response", {
         "rag_results": rag_count

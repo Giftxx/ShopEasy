@@ -107,6 +107,11 @@ def handle_chat(db: Session, payload: ChatRequest) -> ChatResponse:
     # Falls back to keyword matching automatically if Ollama is unavailable.
     intent = classify_intent(payload.message)
 
+    # Validate intent value
+    _VALID_INTENTS = {"track_shipment", "refund_request", "general_inquiry"}
+    if intent not in _VALID_INTENTS:
+        intent = "general_inquiry"
+
     # ── Inter-Agent: Publish intent classification event ──────────────────────
     bus = MessageBus.get_instance()
     bus.publish("intent_classified", AgentMessage(
@@ -133,10 +138,13 @@ def handle_chat(db: Session, payload: ChatRequest) -> ChatResponse:
         response = handle_tracking_chat(db, payload, pre_classified_intent=intent)
 
     # ── Update conversation metadata (messages saved by observability layer) ─
-    conv = db.get(Conversation, payload.conversation_id)
-    if conv:
-        conv.updated_at = datetime.utcnow()
-        conv.latest_intent = intent
-        db.commit()
+    try:
+        conv = db.get(Conversation, payload.conversation_id)
+        if conv:
+            conv.updated_at = datetime.utcnow()
+            conv.latest_intent = intent
+            db.commit()
+    except Exception:
+        db.rollback()
 
     return response

@@ -65,16 +65,19 @@ GENERAL_SYSTEM_PROMPT = """\
 ฉันชื่อ "น้อยช้อป" และฉันคือผู้ช่วย AI หญิงของ ShopEasy แพลตฟอร์มอีคอมเมิร์ซไทย
 
 บทบาทของคุณ:
-- ตอบคำถามทั่วไปเกี่ยวกับการสั่งซื้อ การจัดส่ง การคืนเงิน และนโยบายของร้านค้า
+- ตอบคำถามทุกอย่างเกี่ยวกับลูกค้าจากข้อมูลจริงในระบบ
+- ถ้าลูกค้าถามชื่อ อีเมล ระดับสมาชิก ออเดอร์ พัสดุ คำขอคืนเงิน → ดูจาก [ข้อมูลจากระบบ] แล้วตอบ
+- ถ้าลูกค้าถามเรื่องนโยบาย → ดูจากนโยบายที่แนบมาในข้อมูลจากระบบ
+- ถ้าไม่มีข้อมูลเพียงพอ ให้ถามกลับอย่างสุภาพ
 - พูดภาษาไทยอย่างเป็นกันเองและอบอุ่น
-- ถ้าไม่มีข้อมูลเพียงพอ ให้ถามกลับเพื่อขอรายละเอียดเพิ่มเติม
-- ตอบสั้น ไม่เกิน 100 คำ
+- ตอบสั้น ไม่เกิน 150 คำ
 
 ข้อมูลทั่วไปของ ShopEasy:
 - สามารถติดตามพัสดุได้ในแท็บ "การจัดส่ง"
 - คำขอคืนเงินสามารถยื่นได้ในแท็บ "คืนเงิน / คืนสินค้า"
 - เวลาตรวจสอบคำขอคืนเงิน 3-7 วันทำการ
 - แนบรูปหลักฐานสินค้าเสียหายเพื่อเร่งการตรวจสอบ
+
 สำคัญ: ตอบเป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาจีนหรืออักษรจีนใดๆ
 """
 
@@ -91,9 +94,10 @@ def _make_llm_client() -> tuple["OpenAI", str]:  # type: ignore[name-defined]
 
     settings = get_settings()
     
-    # Prefer OpenAI API if key is configured
-    if settings.openai_api_key and settings.openai_api_key.strip():
-        client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
+    # Prefer OpenAI API if a real key is configured (must start with sk-)
+    api_key = (settings.openai_api_key or "").strip()
+    if api_key and api_key.startswith("sk-"):
+        client = OpenAI(api_key=api_key, timeout=90.0)
         return client, "gpt-3.5-turbo"
     
     # Fallback to Ollama
@@ -146,9 +150,20 @@ INTENT_ROUTER_PROMPT = """\
 You are an intent classifier for ShopEasy, a Thai e-commerce platform.
 
 Classify the customer message into exactly ONE of these labels:
-  track_shipment   — asking about order status, shipment location, delivery, or tracking
+  track_shipment   — asking about order status, shipment location, delivery, tracking, or listing orders
   refund_request   — requesting a refund or return, reporting damaged goods, wrong item, or missing item
-  general_inquiry  — anything else (greetings, general questions, other topics)
+  general_inquiry  — anything else (greetings, account info, policies, general questions)
+
+Examples:
+  "ของฉันอยู่ไหนแล้ว" → track_shipment
+  "Where is my order?" → track_shipment
+  "ฉันมีออเดอร์อะไรบ้าง" → track_shipment
+  "ขอคืนเงินได้ไหม" → refund_request
+  "สินค้าเสียหาย" → refund_request
+  "I want a refund" → refund_request
+  "ฉันชื่ออะไร" → general_inquiry
+  "นโยบายคืนเงินเป็นยังไง" → general_inquiry
+  "สวัสดี" → general_inquiry
 
 Rules:
 - Reply with ONLY the label — no punctuation, no explanation, no extra words.

@@ -36,6 +36,8 @@ services:
       MINIO_USE_SSL: "False"
       MINIO_PUBLIC_ENDPOINT: "localhost:9000"
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434/v1"
+      OLLAMA_MODEL: "qwen2.5:1.5b"
       SECRET_KEY: "shopeasy-docker-dev-secret-key-2026"
       GOOGLE_CLIENT_ID: ""
       QDRANT_HOST: qdrant
@@ -49,6 +51,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     volumes:
       - ./backend:/app
     command: >
@@ -116,7 +120,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost:6333/collections"]
       interval: 10s
       timeout: 5s
       retries: 5
