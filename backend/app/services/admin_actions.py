@@ -197,8 +197,8 @@ def resolve_proactive_alert(db: Session, alert_id: str, reason: str | None = Non
 
     if alert.case_id:
         case = db.get(Case, alert.case_id)
-        if case is not None and case.status != "closed":
-            case.status = "resolved"
+        if case is not None and case.status not in ("closed", "approved", "rejected"):
+            case.status = "closed"
             case.updated_at = datetime.utcnow()
 
     _log_admin_action(

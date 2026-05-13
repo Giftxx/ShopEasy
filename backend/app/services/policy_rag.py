@@ -459,10 +459,11 @@ def search_policy_vector(query: str, limit: int = 5) -> list[dict]:
         return []
 
     try:
-        results = client.search(
+        response = client.query_points(
             collection_name=_COLLECTION_NAME,
-            query_vector=query_embedding,
+            query=query_embedding,
             limit=limit,
+            with_payload=True,
         )
         return [
             {
@@ -476,7 +477,7 @@ def search_policy_vector(query: str, limit: int = 5) -> list[dict]:
                 "page_number": hit.payload.get("page_number"),
                 "score": hit.score,
             }
-            for hit in results
+            for hit in response.points
         ]
     except Exception:
         return []

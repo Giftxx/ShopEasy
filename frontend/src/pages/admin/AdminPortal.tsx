@@ -4,21 +4,25 @@ import { api } from '../../lib/api'
 import { clearSession, readSession } from '../../lib/session'
 import type { Approval, CaseDetail, CaseSummary, ProactiveAlert, RefundRequest } from '../../types/api'
 
-type AdminTab = 'cases' | 'approvals' | 'refunds' | 'alerts'
+type AdminTab = 'cases' | 'alerts'
 
 const NAV: { key: AdminTab; label: string; icon: string }[] = [
-  { key: 'cases',     label: 'Cases',            icon: '▣' },
-  { key: 'approvals', label: 'Approvals',        icon: '✓' },
-  { key: 'refunds',   label: 'Refund / Return',  icon: '↩' },
-  { key: 'alerts',    label: 'Proactive Alerts', icon: '◉' },
+  { key: 'cases',  label: 'Cases',            icon: '▣' },
+  { key: 'alerts', label: 'Proactive Alerts', icon: '◉' },
 ]
 
 function pillClass(status?: string | null): string {
   const s = (status ?? '').toLowerCase()
   if (['approved', 'resolved', 'closed', 'completed', 'success'].includes(s)) return 'status-pill--success'
-  if (['pending', 'open', 'processing'].includes(s)) return 'status-pill--warning'
+  if (['pending', 'open', 'processing', 'pending_review'].includes(s)) return 'status-pill--warning'
   if (['rejected', 'failed', 'high', 'critical'].includes(s)) return 'status-pill--danger'
   return ''
+}
+
+// Cases never use 'resolved' — normalize to 'closed'
+function caseStatus(status?: string | null): string {
+  const s = (status ?? '').toLowerCase()
+  return s === 'resolved' ? 'closed' : s
 }
 
 function riskClass(score?: number | null): string {
@@ -134,7 +138,6 @@ export function AdminPortal() {
           <div className="op-sstat"><strong>{cases.length}</strong><span>Cases</span></div>
           <div className="op-sstat op-sstat--warn"><strong>{pendingApprovals.length}</strong><span>Pending</span></div>
           <div className="op-sstat op-sstat--danger"><strong>{openAlerts.length}</strong><span>Alerts</span></div>
-          <div className="op-sstat"><strong>{refunds.length}</strong><span>Refunds</span></div>
         </div>
         <div className="op-sidebar-footer">
           <div className="op-user">
@@ -168,7 +171,7 @@ export function AdminPortal() {
         </div>
 
         <div className="op-content">
-          {/* Cases */}
+          {/* Cases — unified view with Approvals & Refunds in detail */}
           {tab === 'cases' && (
             <div className="op-split">
               <div className="op-card">
@@ -188,7 +191,7 @@ export function AdminPortal() {
                         <span>{c.case_type} · {c.order_id}</span>
                       </div>
                       <span className={`status-pill ${pillClass(c.priority)}`}>{c.priority ?? 'normal'}</span>
-                      <span className={`status-pill ${pillClass(c.status)}`}>{c.status}</span>
+                      <span className={`status-pill ${pillClass(caseStatus(c.status))}`}>{caseStatus(c.status)}</span>
                       <button
                         type="button"
                         className="op-btn op-btn--ghost"
@@ -213,8 +216,10 @@ export function AdminPortal() {
                         <strong className="op-detail__id">{selectedCase.id}</strong>
                         <span className="op-detail__meta">{selectedCase.case_type}</span>
                       </div>
-                      <span className={`status-pill ${pillClass(selectedCase.status)}`}>{selectedCase.status}</span>
+                      <span className={`status-pill ${pillClass(caseStatus(selectedCase.status))}`}>{caseStatus(selectedCase.status)}</span>
                     </div>
+
+                    {/* Refund Requests section */}
                     {selectedCase.refund_requests.length > 0 && (
                       <div className="op-detail-section">
                         <span className="op-detail-section__label">Refund Requests</span>
@@ -247,86 +252,47 @@ export function AdminPortal() {
                         ))}
                       </div>
                     )}
-                    {selectedCase.approvals.length > 0 && (
-                      <div className="op-detail-section">
-                        <span className="op-detail-section__label">Approvals</span>
-                        {selectedCase.approvals.map(a => (
-                          <div key={a.id} className="op-detail-block">
-                            <div className="op-detail-block__head">
-                              <strong>{a.id}</strong>
-                      <span className={`op-meta-chip ${riskClass(a.risk_score)}`}>{a.risk_level}</span>
-                              <span className={`status-pill ${pillClass(a.status)}`}>{a.status}</span>
+
+                    {/* Approvals section — show only pending (deduped) + completed summary */}
+                    {selectedCase.approvals.length > 0 && (() => {
+                      const pending = selectedCase.approvals.filter(a => a.status === 'pending')
+                      const resolved = selectedCase.approvals.filter(a => a.status !== 'pending')
+                      // Show only the latest pending approval (admin only needs to act on one)
+                      const latestPending = pending.length > 0 ? pending[0] : null
+                      return (
+                        <div className="op-detail-section">
+                          <span className="op-detail-section__label">
+                            Approval {pending.length > 0 ? `(${pending.length} pending)` : ''}
+                          </span>
+                          {latestPending && (
+                            <div className="op-detail-block">
+                              <div className="op-detail-block__head">
+                                <span className={`op-meta-chip ${riskClass(latestPending.risk_score)}`}>{latestPending.risk_level}</span>
+                                <span className={`status-pill ${pillClass(latestPending.status)}`}>{latestPending.status}</span>
+                              </div>
+                              <p className="op-detail-block__text">{latestPending.requested_action}</p>
+                              {latestPending.ai_reason && <p className="op-ai-note">{latestPending.ai_reason}</p>}
+                              <div className="op-btn-group" style={{ marginTop: '0.5rem' }}>
+                                <button type="button" className="op-btn op-btn--approve" onClick={() => void handleApproval('approve', latestPending.id)}>Approve</button>
+                                <button type="button" className="op-btn op-btn--reject" onClick={() => void handleApproval('reject', latestPending.id)}>Reject</button>
+                              </div>
                             </div>
-                            <p className="op-detail-block__text">{a.requested_action}</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                          )}
+                          {resolved.length > 0 && (
+                            <p className="op-detail-block__text" style={{ opacity: 0.6, marginTop: '0.5rem' }}>
+                              {resolved.length} resolved approval{resolved.length > 1 ? 's' : ''}
+                            </p>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                 )}
               </div>
             </div>
           )}
 
-          {/* Approvals */}
-          {tab === 'approvals' && (
-            <div className="op-card">
-              <div className="op-card__head">
-                <h3>Approvals Queue</h3>
-                <span className="op-count">{approvals.length}</span>
-              </div>
-              <div className="op-table">
-                {approvals.map(a => (
-                  <div key={a.id} className="op-row op-row--wrap">
-                    <div className="op-row__main" style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                        <strong>{a.id}</strong>
-                        <span className={`status-pill ${pillClass(a.status)}`}>{a.status}</span>
-                      </div>
-                      <span>{a.requested_action}</span>
-                      {a.ai_reason && <span className="op-ai-note">{a.ai_reason}</span>}
-                    </div>
-                    {a.status === 'pending' && (
-                      <div className="op-btn-group">
-                        <button type="button" className="op-btn op-btn--approve" onClick={() => void handleApproval('approve', a.id)}>Approve</button>
-                        <button type="button" className="op-btn op-btn--reject" onClick={() => void handleApproval('reject', a.id)}>Reject</button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {approvals.length === 0 && <p className="op-empty">No approvals</p>}
-              </div>
-            </div>
-          )}
-
-          {/* Refunds */}
-          {tab === 'refunds' && (
-            <div className="op-card">
-              <div className="op-card__head">
-                <h3>Refund Requests</h3>
-                <span className="op-count">{refunds.length}</span>
-              </div>
-              <div className="op-table">
-                {refunds.map(r => (
-                  <div key={r.id} className="op-row">
-                    <div className="op-row__main">
-                      <strong>{r.id}</strong>
-                      <span>{r.order_id} · {r.customer_id}</span>
-                      {r.reason && <span className="op-row__note">{r.reason}</span>}
-                    </div>
-                    <span className={`op-meta-chip ${riskClass(r.risk_score)}`}>Risk {r.risk_score}</span>
-                    <span className={`status-pill ${pillClass(r.status)}`}>{r.status}</span>
-                    {r.case_id && (
-                      <button type="button" className="op-btn op-btn--ghost" onClick={() => void openCase(r.case_id!)}>Case</button>
-                    )}
-                  </div>
-                ))}
-                {refunds.length === 0 && <p className="op-empty">No refund requests</p>}
-              </div>
-            </div>
-          )}
-
-          {/* Alerts */}
+          {/* Proactive Alerts */}
           {tab === 'alerts' && (
             <div className="op-card">
               <div className="op-card__head">

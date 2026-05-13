@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import Conversation, Customer, Order, Shipment
 from app.db.models.order import ShipmentItem, OrderItem
-from app.db.models.refund import RefundRequest
+from app.db.models.refund import ProactiveAlert, RefundRequest
 
 
 ACTIVE_SHIPMENT_STATUSES = {"pending", "packing", "shipped", "in_transit", "out_for_delivery"}
@@ -20,6 +20,7 @@ class TrackingContext:
     active_orders: list[Order]
     active_shipments: list[Shipment]
     refund_requests: list[RefundRequest] = field(default_factory=list)
+    proactive_alerts: list[ProactiveAlert] = field(default_factory=list)
 
 
 def get_tracking_context(db: Session, customer_id: str, conversation_id: str) -> TrackingContext | None:
@@ -75,10 +76,24 @@ def get_tracking_context(db: Session, customer_id: str, conversation_id: str) ->
         )
     )
 
+    # Fetch proactive alerts for this customer's orders
+    order_ids = [o.id for o in orders]
+    proactive_alerts: list[ProactiveAlert] = []
+    if order_ids:
+        proactive_alerts = list(
+            db.scalars(
+                select(ProactiveAlert)
+                .where(ProactiveAlert.order_id.in_(order_ids))
+                .order_by(ProactiveAlert.created_at.desc())
+                .limit(10)
+            )
+        )
+
     return TrackingContext(
         customer=customer,
         conversation=conversation,
         active_orders=active_orders,
         active_shipments=active_shipments,
         refund_requests=refund_requests,
+        proactive_alerts=proactive_alerts,
     )

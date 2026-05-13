@@ -37,6 +37,8 @@ class ContextState(TypedDict, total=False):
     active_shipment_ids: list[str]
     case_id: str
     refund_request_id: str
+    refund_requests: list[dict]
+    proactive_alerts: list[dict]
 
 
 class RetrievalState(TypedDict, total=False):

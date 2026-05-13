@@ -104,6 +104,22 @@ def context_resolution_node(db: Session, state: GraphState) -> GraphState:
             "risk_score": r.risk_score,
         })
     state["refund_requests"] = refund_list
+
+    # Include proactive alerts (notifications) for customer context
+    alert_list = []
+    for a in (context.proactive_alerts or []):
+        alert_list.append({
+            "id": a.id,
+            "order_id": a.order_id,
+            "shipment_id": a.shipment_id,
+            "alert_type": a.alert_type,
+            "status": a.status,
+            "risk_score": a.risk_score,
+            "recommended_action": a.recommended_action,
+            "message_draft": a.message_draft,
+            "created_at": str(a.created_at) if a.created_at else None,
+        })
+    state["proactive_alerts"] = alert_list
     
     _add_tool_call(state, "context_resolution_node", "get_tracking_context")
     return state
@@ -353,6 +369,19 @@ def fallback_node(db: Session, state: GraphState) -> GraphState:
                 f"สถานะ: {r.get('status', '?')}, เหตุผล: {r.get('reason', '')[:50]}"
             )
         context_parts.append("ประวัติคำขอคืนเงิน:\n" + "\n".join(refund_lines))
+
+    # Proactive alerts (notifications)
+    proactive_alerts = state.get("proactive_alerts", [])
+    if proactive_alerts:
+        alert_lines = []
+        for a in proactive_alerts[:5]:
+            alert_lines.append(
+                f"  - แจ้งเตือน {a.get('id', '?')}: ออเดอร์ {a.get('order_id', '?')}, "
+                f"ประเภท: {a.get('alert_type', '?')}, สถานะ: {a.get('status', '?')}, "
+                f"ความเสี่ยง: {a.get('risk_score', '?')}, "
+                f"คำแนะนำ: {(a.get('recommended_action') or '')[:80]}"
+            )
+        context_parts.append("การแจ้งเตือน (Proactive Alerts):\n" + "\n".join(alert_lines))
 
     # Memory summary
     memory_summary = state.get("memory_summary")
