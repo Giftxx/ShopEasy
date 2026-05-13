@@ -125,10 +125,11 @@ export function CustomerPortal() {
   const setActiveTab = (tab: CustomerTab) => setSearchParams({ tab }, { replace: true })
   const [orders, setOrders] = useState<OrderSummary[]>([])
   const [shipments, setShipments] = useState<ShipmentDetail[]>([])
-  const [, setConversations] = useState<ConversationSummary[]>([])
+  const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [refundRequests, setRefundRequests] = useState<RefundRequest[]>([])
   const [conversationId, setConversationId] = useState<string>('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [selectedRefundDetail, setSelectedRefundDetail] = useState<RefundRequestDetail | null>(null)
   const [showAllRefunds, setShowAllRefunds] = useState(false)
   const [refundDetailLoading, setRefundDetailLoading] = useState(false)
@@ -173,7 +174,21 @@ export function CustomerPortal() {
         if (ordersData.length > 0) setSelectedOrderId(ordersData[0].id)
 
         if (conversationsData.length > 0) {
-          setConversationId(conversationsData[0].id)
+          const latestConv = conversationsData[0]
+          setConversationId(latestConv.id)
+          try {
+            const detail = await api.getConversation(latestConv.id)
+            const loaded: ChatMessage[] = detail.messages.map((m) => ({
+              role: m.sender_type === 'customer' ? 'user' : 'ai',
+              text: m.content,
+              time: m.created_at
+                ? new Date(m.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+                : '',
+            }))
+            setMessages(loaded)
+          } catch {
+            // ประวัติโหลดไม่ได้ — เริ่มใหม่
+          }
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'โหลดข้อมูลลูกค้าไม่สำเร็จ')
@@ -224,11 +239,40 @@ export function CustomerPortal() {
       })
 
       setMessages((prev) => [...prev, { role: 'ai', text: result.response_text, time: aiNow }])
+
+      // Refresh conversation list so new conversation appears in history
+      const updatedConvs = await api.getCustomerConversations(customerId)
+      setConversations(updatedConvs)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'ส่งข้อความไม่สำเร็จ')
     } finally {
       setChatLoading(false)
     }
+  }
+
+  async function switchConversation(convId: string) {
+    if (convId === conversationId) return
+    try {
+      const detail = await api.getConversation(convId)
+      const loaded: ChatMessage[] = detail.messages.map((m) => ({
+        role: m.sender_type === 'customer' ? 'user' : 'ai',
+        text: m.content,
+        time: m.created_at
+          ? new Date(m.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+          : '',
+      }))
+      setMessages(loaded)
+      setConversationId(convId)
+      setHistoryOpen(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'โหลดประวัติการสนทนาไม่สำเร็จ')
+    }
+  }
+
+  function startNewChat() {
+    setMessages([])
+    setConversationId(crypto.randomUUID())
+    setHistoryOpen(false)
   }
 
   async function loadRefundDetail(refundRequestId: string) {
@@ -300,6 +344,13 @@ export function CustomerPortal() {
   }
 
   function renderAssistant() {
+    const INTENT_LABEL: Record<string, string> = {
+      track_shipment: 'ติดตามพัสดุ',
+      refund_request: 'คืนเงิน',
+      order_status: 'สถานะออเดอร์',
+      general_inquiry: 'ทั่วไป',
+    }
+
     return (
       <section className="shopeasy-chat-page">
         <header className="shopeasy-chat-header">
@@ -314,7 +365,51 @@ export function CustomerPortal() {
               </p>
             </div>
           </div>
+
+          <div className="shopeasy-chat-header__right">
+            {conversations.length > 0 && (
+              <button
+                type="button"
+                className="chat-history-btn"
+                onClick={() => setHistoryOpen((v) => !v)}
+                title="ประวัติการสนทนา"
+              >
+                ☰ ประวัติ {conversations.length > 0 ? `(${conversations.length})` : ''}
+              </button>
+            )}
+            <button type="button" className="chat-new-btn" onClick={startNewChat}>
+              + สนทนาใหม่
+            </button>
+          </div>
         </header>
+
+        {historyOpen && conversations.length > 0 && (
+          <div className="chat-history-panel">
+            <p className="chat-history-panel__title">ประวัติการสนทนา</p>
+            <ul>
+              {conversations.map((conv) => (
+                <li
+                  key={conv.id}
+                  className={`chat-history-item${conv.id === conversationId ? ' chat-history-item--active' : ''}`}
+                  onClick={() => void switchConversation(conv.id)}
+                >
+                  <span className="chat-history-item__intent">
+                    {INTENT_LABEL[conv.latest_intent ?? ''] ?? conv.latest_intent ?? 'สนทนา'}
+                  </span>
+                  <span className="chat-history-item__date">
+                    {conv.updated_at
+                      ? new Date(conv.updated_at).toLocaleDateString('th-TH', {
+                          day: 'numeric',
+                          month: 'short',
+                          year: '2-digit',
+                        })
+                      : '—'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <div className="shopeasy-chat-shell">
           {messages.length === 0 ? (

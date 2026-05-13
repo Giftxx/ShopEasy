@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import Conversation, Customer, Order, Shipment
 from app.db.models.order import ShipmentItem, OrderItem
+from app.db.models.refund import RefundRequest
 
 
 ACTIVE_SHIPMENT_STATUSES = {"pending", "packing", "shipped", "in_transit", "out_for_delivery"}
@@ -18,6 +19,7 @@ class TrackingContext:
     conversation: Conversation
     active_orders: list[Order]
     active_shipments: list[Shipment]
+    refund_requests: list[RefundRequest] = field(default_factory=list)
 
 
 def get_tracking_context(db: Session, customer_id: str, conversation_id: str) -> TrackingContext | None:
@@ -63,9 +65,20 @@ def get_tracking_context(db: Session, customer_id: str, conversation_id: str) ->
             active_orders.append(order)
             active_shipments.extend(order_active_shipments)
 
+    # Fetch refund requests for this customer
+    refund_requests = list(
+        db.scalars(
+            select(RefundRequest)
+            .where(RefundRequest.customer_id == customer_id)
+            .order_by(RefundRequest.created_at.desc())
+            .limit(10)
+        )
+    )
+
     return TrackingContext(
         customer=customer,
         conversation=conversation,
         active_orders=active_orders,
         active_shipments=active_shipments,
+        refund_requests=refund_requests,
     )
