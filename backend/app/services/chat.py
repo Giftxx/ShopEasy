@@ -1,5 +1,4 @@
 from datetime import datetime
-from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -128,7 +127,16 @@ def handle_chat(db: Session, payload: ChatRequest) -> ChatResponse:
 
     # ── Route to appropriate workflow ─────────────────────────────────────────
     if intent == "refund_request":
-        return handle_refund_chat(db, payload)
+        response = handle_refund_chat(db, payload)
+    else:
+        # Pass pre-classified intent to avoid redundant LLM call
+        response = handle_tracking_chat(db, payload, pre_classified_intent=intent)
 
-    # Pass pre-classified intent to avoid redundant LLM call
-    return handle_tracking_chat(db, payload, pre_classified_intent=intent)
+    # ── Update conversation metadata (messages saved by observability layer) ─
+    conv = db.get(Conversation, payload.conversation_id)
+    if conv:
+        conv.updated_at = datetime.utcnow()
+        conv.latest_intent = intent
+        db.commit()
+
+    return response

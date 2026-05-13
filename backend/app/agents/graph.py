@@ -16,10 +16,10 @@ from app.agents.nodes.tracking_nodes import (
 from app.agents.state import GraphState
 
 
-def should_route_to_fallback(state: GraphState) -> str:
-    """Determine if the workflow should proceed or fallback."""
+def should_route_after_memory(state: GraphState) -> str:
+    """Route to tracking pipeline or fallback after context+memory are loaded."""
     if state.get("detected_intent") == "track_shipment":
-        return "continue"
+        return "tracking"
     return "fallback"
 
 
@@ -32,6 +32,8 @@ def create_tracking_workflow(db: Session):
     memory_read_with_db = partial(memory_retrieval_node, db)
     memory_write_with_db = partial(memory_write_node, db)
     planner_with_db = partial(planner_node, db)
+    fallback_with_db = partial(fallback_node, db)
+    respond_with_db = partial(support_response_node, db)
 
     # Define the nodes
     workflow.add_node("router", router_node)
@@ -39,29 +41,34 @@ def create_tracking_workflow(db: Session):
     workflow.add_node("get_memory", memory_read_with_db)
     workflow.add_node("plan", planner_with_db)
     workflow.add_node("get_shipping", shipping_node)
-    workflow.add_node("respond", support_response_node)
+    workflow.add_node("respond", respond_with_db)
     workflow.add_node("write_memory", memory_write_with_db)
-    workflow.add_node("fallback", fallback_node)
+    workflow.add_node("fallback", fallback_with_db)
 
-    # Build the graph
+    # Build the graph — ALL paths go through context + memory first
     workflow.set_entry_point("router")
+    workflow.add_edge("router", "get_context")
+    workflow.add_edge("get_context", "get_memory")
 
+    # After memory is loaded, branch based on intent
     workflow.add_conditional_edges(
-        "router",
-        should_route_to_fallback,
+        "get_memory",
+        should_route_after_memory,
         {
-            "continue": "get_context",
+            "tracking": "plan",
             "fallback": "fallback",
         },
     )
 
-    workflow.add_edge("get_context", "get_memory")
-    workflow.add_edge("get_memory", "plan")
+    # Tracking path
     workflow.add_edge("plan", "get_shipping")
     workflow.add_edge("get_shipping", "respond")
     workflow.add_edge("respond", "write_memory")
+
+    # Fallback path — also writes memory
+    workflow.add_edge("fallback", "write_memory")
+
     workflow.add_edge("write_memory", END)
-    workflow.add_edge("fallback", END)
 
     return workflow.compile()
 
