@@ -292,6 +292,49 @@ def delete_policy(db: Session, policy: Policy) -> None:
 # Search
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _tokenize_query(query: str) -> list[str]:
+    """
+    Build a list of search tokens that work for both Thai (no spaces) and
+    English. Strips common Thai question particles and short stop-words so
+    keyword ILIKE matching can hit policy chunks.
+    """
+    if not query:
+        return []
+
+    # Common particles / stop-words to strip from the query.
+    stopwords = [
+        "นโยบาย", "เกี่ยวกับ", "อะไร", "ยังไง", "เป็นยังไง", "เป็นอย่างไร",
+        "อย่างไร", "ไหม", "มั้ย", "คือ", "ของ", "เรา", "ฉัน", "ผม", "ครับ",
+        "ค่ะ", "นะ", "หน่อย", "ช่วย", "ขอ", "ดู", "บอก", "ที", "ที่",
+        "what", "is", "the", "a", "an", "your", "policy", "policies", "tell",
+        "me", "about", "how", "do", "i", "can",
+    ]
+
+    tokens: set[str] = set()
+
+    # 1) Whitespace split (covers English + mixed messages).
+    for w in query.split():
+        w = w.strip().lower()
+        if len(w) >= 2 and w not in stopwords:
+            tokens.add(w)
+
+    # 2) Strip stop-words from the raw string and keep what remains as tokens.
+    cleaned = query
+    for sw in stopwords:
+        cleaned = cleaned.replace(sw, " ")
+    for w in cleaned.split():
+        w = w.strip()
+        if len(w) >= 2:
+            tokens.add(w)
+
+    # 3) Also try the original query as a whole (covers exact phrases).
+    raw = query.strip()
+    if raw:
+        tokens.add(raw)
+
+    return list(tokens)
+
+
 def search_policy_chunks(
     db: Session,
     query: str,
@@ -306,7 +349,7 @@ def search_policy_chunks(
     if not query or not query.strip():
         return []
 
-    words = [w.strip() for w in query.split() if w.strip()]
+    words = _tokenize_query(query)
     if not words:
         return []
 
@@ -314,6 +357,8 @@ def search_policy_chunks(
     for word in words:
         pattern = f"%{word}%"
         conditions.append(PolicyChunk.chunk_text.ilike(pattern))
+        conditions.append(PolicyChunk.heading.ilike(pattern))
+        conditions.append(Policy.title.ilike(pattern))
 
     stmt = (
         select(PolicyChunk)
@@ -501,10 +546,21 @@ def search_policy_hybrid(
                 r["category"] = policy.category or ""
         if category:
             vector_results = [r for r in vector_results if r["category"] == category]
-        return vector_results[:limit]
+        results = vector_results[:limit]
+    else:
+        # Fallback to keyword search
+        results = search_policy_chunks(db, query=query, limit=limit, category=category)
 
-    # Fallback to keyword search
-    return search_policy_chunks(db, query=query, limit=limit, category=category)
+    # Deduplicate by (policy_id, chunk_index) so the same DB row is never
+    # returned twice even when vector + keyword overlap.
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for r in results:
+        key = (r.get("policy_id", ""), r.get("chunk_index", -1))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    return deduped
 
 
 # ──────────────────────────────────────────────────────────────────────────────

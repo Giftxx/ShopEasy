@@ -264,6 +264,78 @@ def support_response_node(db: Session, state: GraphState) -> GraphState:
     shipment_summaries = state.get("shipments", [])
     raw_message = state.get("raw_message", "")
 
+    # Thai status label → shown to LLM so it can describe orders correctly.
+    STATUS_LABEL: dict[str, str] = {
+        "pending":          "จัดเตรียม",
+        "packing":          "จัดเตรียม",
+        "packed":           "จัดเตรียม",
+        "shipped":          "จัดส่งแล้ว",
+        "in_transit":       "จัดส่งแล้ว (กำลังขนส่ง)",
+        "out_for_delivery": "จัดส่งแล้ว (กำลังนำส่ง)",
+        "delivered":        "สำเร็จ (ส่งถึงแล้ว)",
+        "completed":        "สำเร็จ",
+        "cancelled":        "ยกเลิก",
+        "canceled":         "ยกเลิก",
+        "delayed":          "ล่าช้า",
+        "failed":           "จัดส่งไม่สำเร็จ",
+    }
+
+    # Direct-answer status filtering: if user asks about a specific status,
+    # narrow the shipment list so the response only covers what was asked.
+    if shipment_summaries:
+        msg_lower = (raw_message or "").lower()
+        STATUS_FILTERS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+            # จัดเตรียม — pending / packing (not yet handed to carrier)
+            (
+                ("จัดเตรียม", "กำลังเตรียม", "เตรียมพัสดุ", "packing", "pending", "preparing"),
+                ("pending", "packing", "packed"),
+            ),
+            # จัดส่งแล้ว — handed to carrier, en route
+            (
+                ("จัดส่งแล้ว", "กำลังส่ง", "ระหว่างขนส่ง", "shipped", "in_transit", "in transit", "กำลังนำส่ง", "out for delivery", "out_for_delivery", "ใกล้ถึง"),
+                ("shipped", "in_transit", "out_for_delivery"),
+            ),
+            # สำเร็จ — delivered
+            (
+                ("สำเร็จ", "ส่งสำเร็จ", "ได้รับแล้ว", "delivered", "completed"),
+                ("delivered", "completed"),
+            ),
+            # ยกเลิก — cancelled
+            (
+                ("ยกเลิก", "cancelled", "canceled", "cancel"),
+                ("cancelled", "canceled"),
+            ),
+            # ล่าช้า
+            (
+                ("ล่าช้า", "delayed", "delay"),
+                ("delayed",),
+            ),
+        ]
+        for keywords, allowed in STATUS_FILTERS:
+            if any(k in msg_lower for k in keywords):
+                filtered = [
+                    s for s in shipment_summaries
+                    if (s.get("shipment_status") or s.get("status") or "").lower() in allowed
+                ]
+                state["customer_response_filter"] = {
+                    "asked_statuses": list(allowed),
+                    "matched": len(filtered),
+                }
+                shipment_summaries = filtered
+                break
+        else:
+            # No specific status requested → default to active (in-progress) only
+            # so general queries like "ออเดอร์ของฉัน" don't surface old delivered orders.
+            ACTIVE_STATUSES = {"pending", "packing", "packed", "shipped", "in_transit", "out_for_delivery", "delayed"}
+            active_only = [
+                s for s in shipment_summaries
+                if (s.get("shipment_status") or s.get("status") or "").lower() in ACTIVE_STATUSES
+            ]
+            # Only apply if there are active shipments; otherwise show everything
+            # (edge-case: customer has only completed orders — still useful to show).
+            if active_only:
+                shipment_summaries = active_only
+
     if shipment_summaries:
         # Build structured context for GPT from real DB data
         customer = state.get("customer", {})
@@ -271,12 +343,13 @@ def support_response_node(db: Session, state: GraphState) -> GraphState:
         if isinstance(customer, dict) and customer.get("name"):
             lines.append(f"ชื่อลูกค้า: {customer['name']}")
         for i, s in enumerate(shipment_summaries, 1):
-            status = s.get("shipment_status") or s.get("status", "ไม่ทราบสถานะ")
+            raw_status = (s.get("shipment_status") or s.get("status") or "").lower()
+            status_label = STATUS_LABEL.get(raw_status, raw_status or "ไม่ทราบสถานะ")
             items = ", ".join(s.get("item_names", ["สินค้า"]))
             lines.append(
                 f"พัสดุ {i}: ออเดอร์ {s.get('order_id', '?')} "
                 f"จากร้าน {s.get('seller_name', '?')}, "
-                f"สินค้า: {items}, สถานะ: {status}, "
+                f"สินค้า: {items}, สถานะ: {status_label}, "
                 f"หมายเหตุ: {s.get('note', '')}"
             )
 
@@ -300,7 +373,10 @@ def support_response_node(db: Session, state: GraphState) -> GraphState:
         else:
             state["customer_response"] = build_tracking_response(shipment_summaries)
     else:
-        state["customer_response"] = "ขออภัยค่ะ ไม่พบข้อมูลการจัดส่งสำหรับออเดอร์ของคุณในขณะนี้"
+        if state.get("customer_response_filter"):
+            state["customer_response"] = "ขณะนี้ยังไม่มีพัสดุที่ตรงกับสถานะที่ถามมาค่ะ"
+        else:
+            state["customer_response"] = "ขออภัยค่ะ ไม่พบข้อมูลการจัดส่งสำหรับออเดอร์ของคุณในขณะนี้"
 
     _add_tool_call(state, "support_response_node", "call_llm_tracking_response")
     return state

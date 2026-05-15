@@ -7,11 +7,10 @@ import { readSession } from '../../lib/session'
 import { SvgIcon } from './components/SvgIcon'
 import { WorkspaceTab } from './tabs/WorkspaceTab'
 import { TracesTab } from './tabs/TracesTab'
-import { RagTab } from './tabs/RagTab'
 import { EvaluationTab } from './tabs/EvaluationTab'
 import { AnalyticsTab } from './tabs/AnalyticsTab'
 
-type AiTab = 'workspace' | 'traces' | 'rag' | 'evaluation' | 'analytics'
+type AiTab = 'workspace' | 'traces' | 'evaluation' | 'analytics'
 
 const navItems: { key: AiTab; label: string; icon: ReactNode }[] = [
   {
@@ -39,20 +38,6 @@ const navItems: { key: AiTab; label: string; icon: ReactNode }[] = [
           <>
             <circle cx="11" cy="11" r="5.6" fill="none" stroke="currentColor" strokeWidth="1.7" />
             <path d="m15.2 15.2 4.1 4.1" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-          </>
-        }
-      />
-    ),
-  },
-  {
-    key: 'rag',
-    label: 'Policies / RAG',
-    icon: (
-      <SvgIcon
-        path={
-          <>
-            <rect x="6" y="4" width="12" height="16" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.6" />
-            <path d="M9 8h6M9 12h6M9 16h4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
           </>
         }
       />
@@ -122,7 +107,6 @@ export function AiControlPortal() {
         <div className="ai-portal-content">
           {activeTab === 'workspace' && <WorkspaceTab />}
           {activeTab === 'traces' && <TracesTab />}
-          {activeTab === 'rag' && <RagTab />}
           {activeTab === 'evaluation' && <EvaluationTab />}
           {activeTab === 'analytics' && <AnalyticsTab />}
         </div>

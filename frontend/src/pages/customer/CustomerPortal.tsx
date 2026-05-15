@@ -178,7 +178,16 @@ export function CustomerPortal() {
           setConversationId(latestConv.id)
           try {
             const detail = await api.getConversation(latestConv.id)
-            const loaded: ChatMessage[] = detail.messages.map((m) => ({
+            const sortedMessages = [...detail.messages].sort((a, b) => {
+              const ta = new Date(a.created_at ?? 0).getTime()
+              const tb = new Date(b.created_at ?? 0).getTime()
+              if (ta !== tb) return ta - tb
+              const senderRank = (s?: string | null) => ((s ?? '').toLowerCase() === 'customer' ? 0 : 1)
+              const sr = senderRank(a.sender_type) - senderRank(b.sender_type)
+              if (sr !== 0) return sr
+              return a.id.localeCompare(b.id)
+            })
+            const loaded: ChatMessage[] = sortedMessages.map((m) => ({
               role: m.sender_type === 'customer' ? 'user' : 'ai',
               text: m.content,
               time: m.created_at
@@ -254,7 +263,16 @@ export function CustomerPortal() {
     if (convId === conversationId) return
     try {
       const detail = await api.getConversation(convId)
-      const loaded: ChatMessage[] = detail.messages.map((m) => ({
+      const sortedMessages = [...detail.messages].sort((a, b) => {
+        const ta = new Date(a.created_at ?? 0).getTime()
+        const tb = new Date(b.created_at ?? 0).getTime()
+        if (ta !== tb) return ta - tb
+        const senderRank = (s?: string | null) => ((s ?? '').toLowerCase() === 'customer' ? 0 : 1)
+        const sr = senderRank(a.sender_type) - senderRank(b.sender_type)
+        if (sr !== 0) return sr
+        return a.id.localeCompare(b.id)
+      })
+      const loaded: ChatMessage[] = sortedMessages.map((m) => ({
         role: m.sender_type === 'customer' ? 'user' : 'ai',
         text: m.content,
         time: m.created_at
@@ -655,7 +673,10 @@ export function CustomerPortal() {
               out_for_delivery: 4, delivered: 5, carrier_contacted: 6,
               shipment_no_update_48h: 0,
             }
-            const recentEvents = [...shipment.events]
+            // Dedupe automated/system events to at most 1 per day per type per shipment
+            const AUTOMATED_TYPES = new Set(['shipment_no_update_48h', 'carrier_contacted'])
+            const seenAutomatedKeys = new Set<string>()
+            const dedupedEvents = [...shipment.events]
               .sort((a, b) => {
                 const ta = new Date(a.event_time ?? a.created_at ?? 0).getTime()
                 const tb = new Date(b.event_time ?? b.created_at ?? 0).getTime()
@@ -664,7 +685,16 @@ export function CustomerPortal() {
                 const pb = EVENT_PRIORITY[b.event_type ?? ''] ?? 99
                 return pb - pa
               })
-              .slice(0, 5)
+              .filter((evt) => {
+                const evtType = evt.event_type ?? ''
+                if (!AUTOMATED_TYPES.has(evtType)) return true
+                const ts = new Date(evt.event_time ?? evt.created_at ?? 0)
+                const dayKey = `${evtType}|${ts.getFullYear()}-${ts.getMonth()}-${ts.getDate()}`
+                if (seenAutomatedKeys.has(dayKey)) return false
+                seenAutomatedKeys.add(dayKey)
+                return true
+              })
+            const recentEvents = dedupedEvents.slice(0, 5)
 
             return (
               <article key={shipment.id} className="shipment-card">
@@ -890,30 +920,52 @@ export function CustomerPortal() {
             <strong style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem' }}>ประวัติคำขอคืนเงิน ({refundRequests.length} รายการ)</strong>
             {refundDetailLoading ? <div className="notice">กำลังโหลด...</div> : null}
             <div className="list-stack">
-              {refundRequests.map((item) => (
-                <article
-                  key={item.id}
-                  className="list-card"
-                  style={{ cursor: 'pointer', outline: selectedRefundDetail?.id === item.id ? '2px solid #ee4d2d' : 'none' }}
-                  onClick={() => void loadRefundDetail(item.id)}
-                >
-                  <div>
-                    <strong>{item.id}</strong>
-                    <p style={{ fontSize: '0.8rem', color: '#666' }}>{item.reason}</p>
-                  </div>
-                  <div className="list-card__meta">
-                    <span>Risk {item.risk_score}</span>
-                    <span className="status-pill">{item.status}</span>
-                  </div>
-                </article>
-              ))}
+              {refundRequests.map((item) => {
+                const linkedOrder = orders.find((o) => o.id === item.order_id)
+                const productName =
+                  linkedOrder?.items?.[0]?.product_name ??
+                  linkedOrder?.seller_name ??
+                  item.order_id
+                return (
+                  <article
+                    key={item.id}
+                    className="list-card"
+                    style={{ cursor: 'pointer', outline: selectedRefundDetail?.id === item.id ? '2px solid #ee4d2d' : 'none' }}
+                    onClick={() => void loadRefundDetail(item.id)}
+                  >
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <strong style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {productName}
+                      </strong>
+                      <p style={{ fontSize: '0.78rem', color: '#94a3b8', margin: '0.15rem 0 0.25rem' }}>
+                        ออเดอร์ {item.order_id} · คำขอ {item.id}
+                      </p>
+                      <p style={{ fontSize: '0.8rem', color: '#666', margin: 0 }}>{item.reason}</p>
+                    </div>
+                    <div className="list-card__meta">
+                      <span>Risk {item.risk_score}</span>
+                      <span className="status-pill">{item.status}</span>
+                    </div>
+                  </article>
+                )
+              })}
             </div>
 
             {selectedRefundDetail ? (
-              <div className="list-card" style={{ marginTop: '0.75rem', background: '#fffaf7' }}>
-                <strong style={{ display: 'block', marginBottom: '0.5rem' }}>{selectedRefundDetail.id} — รายละเอียด</strong>
-                <p style={{ fontSize: '0.82rem' }}>เหตุผล: {selectedRefundDetail.reason}</p>
-                <p style={{ fontSize: '0.82rem' }}>สถานะ: {selectedRefundDetail.status} | AI แนะนำ: {selectedRefundDetail.ai_recommendation}</p>
+              (() => {
+                const linkedOrder = orders.find((o) => o.id === selectedRefundDetail.order_id)
+                const productName =
+                  linkedOrder?.items?.[0]?.product_name ??
+                  linkedOrder?.seller_name ??
+                  selectedRefundDetail.order_id
+                return (
+                  <div className="list-card" style={{ marginTop: '0.75rem', background: '#fffaf7' }}>
+                    <strong style={{ display: 'block', marginBottom: '0.25rem' }}>{productName}</strong>
+                    <p style={{ fontSize: '0.78rem', color: '#94a3b8', margin: '0 0 0.5rem' }}>
+                      ออเดอร์ {selectedRefundDetail.order_id} · คำขอ {selectedRefundDetail.id}
+                    </p>
+                    <p style={{ fontSize: '0.82rem' }}>เหตุผล: {selectedRefundDetail.reason}</p>
+                    <p style={{ fontSize: '0.82rem' }}>สถานะ: {selectedRefundDetail.status} | AI แนะนำ: {selectedRefundDetail.ai_recommendation}</p>
                 {selectedRefundDetail.attachments.length > 0 ? (
                   <div style={{ marginTop: '0.5rem' }}>
                     <strong style={{ fontSize: '0.82rem' }}>หลักฐาน ({selectedRefundDetail.attachments.length} ไฟล์):</strong>
@@ -939,6 +991,8 @@ export function CustomerPortal() {
               <p className="customer-empty">ยังไม่มีหลักฐาน</p>
                 )}
               </div>
+                )
+              })()
             ) : refundRequests.length > 0 ? (
               <p className="customer-empty">คลิกที่รายการเพื่อดูรายละเอียด</p>
             ) : null}

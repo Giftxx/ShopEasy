@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -82,7 +82,8 @@ def persist_workflow_observability(
                 sender_id="system",
                 content=state.response_text or "No response generated.",
                 metadata_json={"source": "workflow_response", "workflow_name": workflow_name, "trace_id": trace_id},
-                created_at=now,
+                # AI reply must sort AFTER the customer's message even if both share the same second
+                created_at=now + timedelta(milliseconds=1),
             )
         )
 

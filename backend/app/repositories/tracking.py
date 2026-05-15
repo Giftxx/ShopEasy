@@ -10,7 +10,13 @@ from app.db.models.order import ShipmentItem, OrderItem
 from app.db.models.refund import ProactiveAlert, RefundRequest
 
 
-ACTIVE_SHIPMENT_STATUSES = {"pending", "packing", "shipped", "in_transit", "out_for_delivery"}
+# Statuses that appear in the 'active' (in-progress) view — used as the
+# default filter when the user asks a general question with no specific status.
+ACTIVE_SHIPMENT_STATUSES = {"pending", "packing", "packed", "shipped", "in_transit", "out_for_delivery"}
+
+# All statuses the repository should fetch so status-specific queries
+# ("สำเร็จ", "ยกเลิก") can work correctly.
+ALL_SHIPMENT_STATUSES = ACTIVE_SHIPMENT_STATUSES | {"delivered", "completed", "cancelled", "canceled", "failed", "delayed"}
 
 
 @dataclass
@@ -60,7 +66,7 @@ def get_tracking_context(db: Session, customer_id: str, conversation_id: str) ->
         order_active_shipments = [
             shipment
             for shipment in order.shipments
-            if shipment.shipment_status in ACTIVE_SHIPMENT_STATUSES
+            if (shipment.shipment_status or "").lower() in ALL_SHIPMENT_STATUSES
         ]
         if order_active_shipments:
             active_orders.append(order)

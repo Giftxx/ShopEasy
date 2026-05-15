@@ -191,7 +191,7 @@ Rules:
 - When in doubt between track_shipment and refund_request, choose refund_request.
 """
 
-_VALID_INTENTS = {"track_shipment", "refund_request", "general_inquiry"}
+_VALID_INTENTS = {"track_shipment", "refund_request", "policy_question", "general_inquiry"}
 
 
 def call_llm_classify(system_prompt: str, user_message: str) -> str | None:
@@ -226,8 +226,14 @@ def classify_intent(message: str) -> str:
     import os
 
     # Keyword classification (fast — always available)
-    from app.agents.tools.refund import detect_refund_intent
+    from app.agents.tools.refund import detect_policy_intent, detect_refund_intent
     from app.agents.tools.tracking import detect_tracking_intent
+
+    # 1) Policy questions FIRST — "นโยบายคืนเงิน / คืนได้กี่วัน" must not be
+    #    treated as a refund action or as a shipping-tracking lookup.
+    if detect_policy_intent(message) == "policy_question":
+        logger.info("Keyword router → policy_question (message: %.60s)", message)
+        return "policy_question"
 
     if detect_refund_intent(message) == "refund_request":
         logger.info("Keyword router → refund_request (message: %.60s)", message)

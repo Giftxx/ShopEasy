@@ -233,7 +233,15 @@ def read_conversation(conversation_id: str, db: Session = Depends(get_db)) -> Co
                 metadata_json=message.metadata_json,
                 created_at=message.created_at,
             )
-            for message in sorted(conversation.messages, key=lambda item: ((item.created_at or 0), item.id))
+            for message in sorted(
+                conversation.messages,
+                # Sort by created_at; on ties, customer always comes before ai.
+                key=lambda item: (
+                    item.created_at or datetime.min,
+                    0 if (item.sender_type or "").lower() == "customer" else 1,
+                    item.id,
+                ),
+            )
         ],
     )
 

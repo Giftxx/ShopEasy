@@ -271,6 +271,28 @@ def proactive_carrier_notify_node(
 ) -> TrackingWorkflowState:
     """Simulate notifying the carrier about a stale shipment. Writes a ShipmentEvent record."""
     shipment = context.shipment
+
+    # ── DEDUPE: at most one carrier_contacted event per shipment per UTC day ──
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    existing = db.execute(
+        select(ShipmentEvent)
+        .where(ShipmentEvent.shipment_id == shipment.id)
+        .where(ShipmentEvent.event_type == "carrier_contacted")
+        .where(ShipmentEvent.event_time >= today_start)
+        .order_by(ShipmentEvent.event_time.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        state.tool_logs.append({
+            "node": "carrier_notify_node",
+            "tool": "notify_carrier",
+            "shipment_id": shipment.id,
+            "skipped": "already_notified_today",
+            "existing_event_id": existing.id,
+        })
+        return state
+
     message = build_carrier_notification(
         shipment_id=shipment.id,
         tracking_no=shipment.tracking_no,
@@ -307,7 +329,7 @@ def proactive_carrier_notify_node(
     return state
 
 
-def proactive_carrier_notify_node(
+def _legacy_proactive_carrier_notify_node_DEPRECATED(
     db: Session, state: TrackingWorkflowState, context: ProactiveContext, alert: ProactiveAlert
 ) -> TrackingWorkflowState:
     """Simulate notifying the carrier about a stale shipment. Writes a ShipmentEvent record."""

@@ -3,8 +3,52 @@ from __future__ import annotations
 from app.db.models import Attachment, Policy
 
 
+def detect_policy_intent(message: str) -> str:
+    """
+    Detect questions about policies / rules / terms.
+
+    Policy questions ask ABOUT the rules ("how many days can I return?",
+    "what's your refund policy?") rather than requesting an action on a
+    specific order ("I want to refund order SP-123").
+    """
+    lowered = message.lower()
+
+    # Strong policy markers — if any of these appear, it's a policy question.
+    policy_markers = [
+        "นโยบาย",
+        "policy",
+        "เงื่อนไข",
+        "กี่วัน",
+        "ภายในกี่",
+        "ระยะเวลา",
+        "rule",
+        "rules",
+        "terms",
+        "warranty",
+        "ประกัน",
+        "การรับประกัน",
+        "หลักเกณฑ์",
+        "ข้อกำหนด",
+    ]
+    if any(marker in lowered for marker in policy_markers):
+        return "policy_question"
+
+    # General "ได้ไหม / can I" style without referencing a specific order ID
+    # → treat as policy / eligibility question.
+    eligibility_markers = ["ขอคืนเงินได้ไหม", "เคลมได้มั้ย", "เคลมได้ไหม", "can i refund", "can i return"]
+    if any(marker in lowered for marker in eligibility_markers):
+        return "policy_question"
+
+    return "general_inquiry"
+
+
 def detect_refund_intent(message: str) -> str:
     lowered = message.lower()
+
+    # Policy questions take precedence — don't treat them as refund actions.
+    if detect_policy_intent(message) == "policy_question":
+        return "general_inquiry"
+
     refund_keywords = [
         "คืนเงิน",
         "refund",
