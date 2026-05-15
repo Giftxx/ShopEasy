@@ -213,12 +213,45 @@ def _try_react_engine(db: Session, payload: ChatRequest, intent: str) -> ChatRes
         return None
 
 
+_GREETING_TOKENS = {
+    "สวัสดี", "หวัดดี", "ดีครับ", "ดีค่ะ", "เฮ้", "เฮ้โล",
+    "hello", "hi", "hey",
+}
+
+
+def _is_pure_greeting(message: str) -> bool:
+    """True if message is a greeting with no substantive question."""
+    stripped = message.strip()
+    if len(stripped) > 60:
+        return False
+    lower = stripped.lower()
+    return any(lower.startswith(kw) or lower == kw for kw in _GREETING_TOKENS)
+
+
 def handle_chat(db: Session, payload: ChatRequest) -> ChatResponse:
     from app.agents.inter_agent import MessageBus, MessageType, AgentMessage
 
     # Ensure conversation exists BEFORE the (slow) LLM call so the DB
     # connection is not left idle during inference.
     _ensure_conversation(db, payload)
+
+    # ── Fast path: pure greeting → skip workflow entirely ─────────────────────
+    if _is_pure_greeting(payload.message):
+        try:
+            conv = db.get(Conversation, payload.conversation_id)
+            if conv:
+                conv.updated_at = datetime.utcnow()
+                conv.latest_intent = "general_inquiry"
+                db.commit()
+        except Exception:
+            db.rollback()
+        return ChatResponse(
+            workflow_name="greeting",
+            intent="general_inquiry",
+            response_text="สวัสดีค่ะ มีอะไรให้ช่วยได้บ้างคะ?",
+            active_shipments=[],
+            state_snapshot={},
+        )
 
     # ── LLM Agentic Router ────────────────────────────────────────────────────
     # The LLM classifies the customer message into a workflow intent.

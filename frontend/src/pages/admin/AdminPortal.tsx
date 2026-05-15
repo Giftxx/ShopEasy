@@ -601,8 +601,8 @@ export function AdminPortal() {
                         )}
                       </div>
                       <span className={`op-meta-chip ${riskClass(a.risk_score)}`}>Risk {a.risk_score ?? '—'}</span>
-                      <span className={`op-badge ${isResolved ? 'badge--resolved' : 'badge--open'}`}>
-                        {isResolved ? 'Resolved' : 'Open'}
+                      <span className={`op-badge ${isResolved ? 'badge--resolved' : ''}`}>
+                        {isResolved ? 'Resolved' : ''}
                       </span>
                       <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                         {/* Open Case: navigate to Cases tab and load the linked case */}
